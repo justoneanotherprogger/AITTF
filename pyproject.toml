@@ -1,0 +1,22 @@
+[tool.poetry]
+name = "ai-tabletop-framework"
+version = "0.1.0"
+description = "AI Tabletop Framework — веб-фреймворк для проведения настольных ролевых игр с ИИ-рассказчиком"
+authors = []
+readme = "README.md"
+package-mode = false
+
+[tool.poetry.dependencies]
+python = "^3.10"
+fastapi = "*"
+uvicorn = "*"
+httpx = "*"
+pydantic = "*"
+python-multipart = "*"
+python-dotenv = "*"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+
