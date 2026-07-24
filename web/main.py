@@ -141,14 +141,16 @@ _INDEX_HTML = """<!DOCTYPE html>
     (function() {
       var chat = document.getElementById('chat-messages');
       var scrollBtn = document.getElementById('scroll-bottom-btn');
+      var userHasScrolledUp = false;
 
       function scrollToBottom() {
         chat.scrollTop = chat.scrollHeight;
+        userHasScrolledUp = false;
         clearPulse();
       }
 
       function isNearBottom() {
-        return chat.scrollTop + chat.clientHeight >= chat.scrollHeight - 60;
+        return chat.scrollTop + chat.clientHeight >= chat.scrollHeight - 150;
       }
 
       function clearPulse() {
@@ -157,43 +159,44 @@ _INDEX_HTML = """<!DOCTYPE html>
       }
 
       function setPulse() {
-        if (!isNearBottom() && !scrollBtn.classList.contains('animate-pulse')) {
+        if (!scrollBtn.classList.contains('animate-pulse')) {
           scrollBtn.classList.remove('bg-emerald-600', 'hidden');
           scrollBtn.classList.add('flex', 'bg-red-500', 'animate-pulse');
         }
       }
 
-      function updateBtn() {
+      chat.addEventListener('scroll', function() {
         if (isNearBottom()) {
+          userHasScrolledUp = false;
           scrollBtn.classList.add('hidden');
           scrollBtn.classList.remove('flex');
           clearPulse();
-        } else {
+        } else if (!userHasScrolledUp) {
+          userHasScrolledUp = true;
           scrollBtn.classList.remove('hidden');
           scrollBtn.classList.add('flex');
+          setPulse();
         }
-      }
-
-      // initial scroll to bottom on first chat content settle
-      function initialSettle(evt) {
-        if (evt.detail.target && evt.detail.target.id === 'chat-messages') {
-          scrollToBottom();
-          document.body.removeEventListener('htmx:afterSettle', initialSettle);
-        }
-      }
-      document.body.addEventListener('htmx:afterSettle', initialSettle);
-
-      chat.addEventListener('scroll', updateBtn);
+      });
 
       scrollBtn.addEventListener('click', scrollToBottom);
 
-      // new content arrived — smart scroll or pulse
-      function onNewContent() {
-        if (isNearBottom()) {
-          scrollToBottom();
-        } else {
-          setPulse();
+      // scroll to bottom on any HTMX settle into chat-messages
+      document.body.addEventListener('htmx:afterSettle', function(evt) {
+        if (evt.detail.target && evt.detail.target.id === 'chat-messages') {
+          onNewContent();
         }
+      });
+
+      // new content arrived — force scroll unless user scrolled up
+      function onNewContent() {
+        setTimeout(function() {
+          if (userHasScrolledUp) {
+            setPulse();
+          } else {
+            scrollToBottom();
+          }
+        }, 50);
       }
 
       // WebSocket for live broadcast
@@ -233,18 +236,12 @@ _INDEX_HTML = """<!DOCTYPE html>
       if (input && (evt.detail.pathInfo.requestPath === '/send_message' ||
                     evt.detail.pathInfo.requestPath === '/declare_action')) {
         input.value = '';
-        // smart scroll for the sender too
+        // always scroll to bottom when user sends a message
         var chat = document.getElementById('chat-messages');
+        chat.scrollTop = chat.scrollHeight;
         var btn = document.getElementById('scroll-bottom-btn');
-        var nearBottom = chat.scrollTop + chat.clientHeight >= chat.scrollHeight - 60;
-        if (nearBottom) {
-          chat.scrollTop = chat.scrollHeight;
-          btn.classList.remove('bg-red-500', 'animate-pulse');
-          btn.classList.add('bg-emerald-600');
-        } else {
-          btn.classList.remove('bg-emerald-600', 'hidden');
-          btn.classList.add('flex', 'bg-red-500', 'animate-pulse');
-        }
+        btn.classList.remove('bg-red-500', 'animate-pulse', 'flex');
+        btn.classList.add('bg-emerald-600', 'hidden');
       }
     });
   </script>
