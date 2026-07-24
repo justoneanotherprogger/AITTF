@@ -29,6 +29,63 @@ async def broadcast_message(html_content: str) -> None:
         _active_ws.remove(ws)
 
 
+_BTN_CLS = 'px-4 py-2 rounded-lg text-sm font-medium transition'
+_ENABLED_CLS = 'bg-gray-600 hover:bg-gray-500 text-white'
+_ACTION_CLS = 'bg-amber-600 hover:bg-amber-500 text-white'
+_DISABLED_CLS = 'bg-gray-700 text-gray-500 cursor-not-allowed'
+
+def _build_input_area_html(locked: bool = False, oob: bool = False) -> str:
+    if oob:
+        if locked:
+            ctrl = (
+                f'<div id="chat-controls" hx-swap-oob="true">'
+                f'<button type="button" disabled class="{_DISABLED_CLS} {_BTN_CLS}">Сказать</button>'
+                f'<button type="button" disabled class="{_DISABLED_CLS} {_BTN_CLS}">Заявить действие</button>'
+                f'</div>'
+                f'<div id="spinner" hx-swap-oob="true" class="text-amber-400 text-sm text-center animate-pulse">✦ Мастер думает...</div>'
+                f'<div id="__lock-input" hx-swap-oob="true" style="display:none"></div>'
+            )
+        else:
+            ctrl = (
+                f'<div id="chat-controls" hx-swap-oob="true">'
+                f'<button type="button" hx-post="/send_message" hx-include="#message-input" '
+                f'hx-target="#chat-messages" hx-swap="beforeend" hx-indicator="#spinner" '
+                f'class="{_ENABLED_CLS} {_BTN_CLS}">Сказать</button>'
+                f'<button id="action-btn" type="button" hx-post="/declare_action" hx-include="#message-input" '
+                f'hx-target="#chat-messages" hx-swap="beforeend" hx-indicator="#spinner" '
+                f'hx-on::before-request="this.disabled=true;this.textContent=\'Думает...\'" '
+                f'hx-on::after-request="this.disabled=false;this.textContent=\'Заявить действие\'" '
+                f'class="{_ACTION_CLS} {_BTN_CLS}">Заявить действие</button>'
+                f'</div>'
+                f'<div id="spinner" hx-swap-oob="true" class="htmx-indicator text-amber-400 text-sm text-center">✦ Мастер думает...</div>'
+                f'<div id="__unlock-input" hx-swap-oob="true" style="display:none"></div>'
+            )
+        return ctrl
+
+    return (
+        '<div id="input-area">'
+        '<div class="border-t border-gray-700 bg-gray-800 p-4">'
+        '<div class="flex gap-2 mb-2">'
+        '<input id="message-input" type="text" name="text" placeholder="Сказать что-то или описать действие..." required autocomplete="off" '
+        'class="flex-1 bg-gray-700 border border-gray-600 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500">'
+        '<div id="chat-controls">'
+        '<button type="button" hx-post="/send_message" hx-include="#message-input" '
+        'hx-target="#chat-messages" hx-swap="beforeend" hx-indicator="#spinner" '
+        f'class="{_ENABLED_CLS} {_BTN_CLS}">Сказать</button>'
+        '<button id="action-btn" type="button" hx-post="/declare_action" hx-include="#message-input" '
+        'hx-target="#chat-messages" hx-swap="beforeend" hx-indicator="#spinner" '
+        'hx-on::before-request="this.disabled=true;this.textContent=\'Думает...\'" '
+        'hx-on::after-request="this.disabled=false;this.textContent=\'Заявить действие\'" '
+        f'class="{_ACTION_CLS} {_BTN_CLS}">Заявить действие</button>'
+        '</div>'
+        '</div>'
+        '<div id="spinner" class="htmx-indicator text-amber-400 text-sm text-center">'
+        '✦ Мастер думает...'
+        '</div>'
+        '</div>'
+        '</div>'
+    )
+
 _INDEX_HTML = """<!DOCTYPE html>
 <html lang="ru">
 <head>
@@ -65,55 +122,109 @@ _INDEX_HTML = """<!DOCTYPE html>
 
     <!-- Main -->
     <main class="flex-1 flex flex-col">
-      <div id="chat-messages" class="flex-1 overflow-y-auto p-4 space-y-3"
+      <div id="chat-messages" class="flex-1 overflow-y-auto p-4 space-y-3 relative"
            hx-get="/chat_fragment" hx-trigger="load, every 3s" hx-swap="innerHTML">
         <div class="text-gray-500 text-sm">Загрузка истории...</div>
       </div>
+      <button id="scroll-bottom-btn" onclick="document.getElementById('chat-messages').scrollTop = document.getElementById('chat-messages').scrollHeight"
+              class="hidden fixed bottom-24 right-6 z-10 bg-emerald-600 hover:bg-emerald-500 text-white w-10 h-10 rounded-full shadow-lg items-center justify-center transition">
+        ↓
+      </button>
 
-      <div id="timer-bar" hx-get="/timer" hx-trigger="every 1s" hx-swap="outerHTML"></div>
+      <div id="timer-poll" hx-get="/timer" hx-trigger="every 1s" hx-swap="none scroll:none" class="hidden"></div>
+      <div id="timer-bar"></div>
 
-      <!-- Input area -->
-      <div class="border-t border-gray-700 bg-gray-800 p-4">
-        <div class="flex gap-2 mb-2">
-          <input id="message-input" type="text" name="text" placeholder="Сказать что-то или описать действие..." required autocomplete="off"
-                 class="flex-1 bg-gray-700 border border-gray-600 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500">
-          <button type="button"
-                  hx-post="/send_message" hx-include="#message-input" hx-target="#chat-messages" hx-swap="afterbegin"
-                  hx-indicator="#spinner"
-                  class="bg-gray-600 hover:bg-gray-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition">
-            Сказать
-          </button>
-          <button id="action-btn" type="button"
-                  hx-post="/declare_action" hx-include="#message-input" hx-target="#chat-messages" hx-swap="afterbegin"
-                  hx-indicator="#spinner"
-                  hx-on::before-request="this.disabled=true; this.textContent='Думает...'"
-                  hx-on::after-request="this.disabled=false; this.textContent='Заявить действие'"
-                  class="bg-amber-600 hover:bg-amber-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition">
-            Заявить действие
-          </button>
-        </div>
-        <div id="spinner" class="htmx-indicator text-amber-400 text-sm text-center">
-          ✦ Мастер думает...
-        </div>
-      </div>
+      <div id="input-area">{INPUT_AREA}</div>
     </main>
   </div>
   <script>
     (function() {
+      var chat = document.getElementById('chat-messages');
+      var scrollBtn = document.getElementById('scroll-bottom-btn');
+
+      function scrollToBottom() {
+        chat.scrollTop = chat.scrollHeight;
+        clearPulse();
+      }
+
+      function isNearBottom() {
+        return chat.scrollTop + chat.clientHeight >= chat.scrollHeight - 60;
+      }
+
+      function clearPulse() {
+        scrollBtn.classList.remove('bg-red-500', 'animate-pulse');
+        scrollBtn.classList.add('bg-emerald-600');
+      }
+
+      function setPulse() {
+        if (!isNearBottom() && !scrollBtn.classList.contains('animate-pulse')) {
+          scrollBtn.classList.remove('bg-emerald-600', 'hidden');
+          scrollBtn.classList.add('flex', 'bg-red-500', 'animate-pulse');
+        }
+      }
+
+      function updateBtn() {
+        if (isNearBottom()) {
+          scrollBtn.classList.add('hidden');
+          scrollBtn.classList.remove('flex');
+          clearPulse();
+        } else {
+          scrollBtn.classList.remove('hidden');
+          scrollBtn.classList.add('flex');
+        }
+      }
+
+      // initial scroll to bottom on first chat content settle
+      function initialSettle(evt) {
+        if (evt.detail.target && evt.detail.target.id === 'chat-messages') {
+          scrollToBottom();
+          document.body.removeEventListener('htmx:afterSettle', initialSettle);
+        }
+      }
+      document.body.addEventListener('htmx:afterSettle', initialSettle);
+
+      chat.addEventListener('scroll', updateBtn);
+
+      scrollBtn.addEventListener('click', scrollToBottom);
+
+      // new content arrived — smart scroll or pulse
+      function onNewContent() {
+        if (isNearBottom()) {
+          scrollToBottom();
+        } else {
+          setPulse();
+        }
+      }
+
       // WebSocket for live broadcast
       var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
       var ws = new WebSocket(proto + '//' + location.host + '/ws/chat');
+      function setInputLock(locked) {
+        var inp = document.getElementById('message-input');
+        if (!inp) return;
+        inp.disabled = locked;
+        inp.classList.toggle('opacity-50', locked);
+      }
+
       ws.onmessage = function(evt) {
         var wrapper = document.createElement('div');
         wrapper.innerHTML = evt.data;
         wrapper.querySelectorAll('[hx-swap-oob]').forEach(function(el) {
+          if (el.id === '__lock-input') { setInputLock(true); return; }
+          if (el.id === '__unlock-input') { setInputLock(false); return; }
           var target = document.getElementById(el.id);
-          if (target) target.outerHTML = el.outerHTML;
-          el.remove();
+          if (!target) return;
+          var swap = el.getAttribute('hx-swap-oob');
+          if (swap === 'afterbegin') {
+            target.insertAdjacentHTML('afterbegin', el.innerHTML);
+          } else if (swap === 'beforeend') {
+            target.insertAdjacentHTML('beforeend', el.innerHTML);
+          } else {
+            target.outerHTML = el.outerHTML;
+          }
         });
-        var chat = document.getElementById('chat-messages');
-        var html = wrapper.innerHTML;
-        if (chat && html.trim()) chat.insertAdjacentHTML('afterbegin', html);
+        htmx.process(document.body);
+        onNewContent();
       };
     })();
     // Clear input after any HTMX request from the two buttons
@@ -122,6 +233,18 @@ _INDEX_HTML = """<!DOCTYPE html>
       if (input && (evt.detail.pathInfo.requestPath === '/send_message' ||
                     evt.detail.pathInfo.requestPath === '/declare_action')) {
         input.value = '';
+        // smart scroll for the sender too
+        var chat = document.getElementById('chat-messages');
+        var btn = document.getElementById('scroll-bottom-btn');
+        var nearBottom = chat.scrollTop + chat.clientHeight >= chat.scrollHeight - 60;
+        if (nearBottom) {
+          chat.scrollTop = chat.scrollHeight;
+          btn.classList.remove('bg-red-500', 'animate-pulse');
+          btn.classList.add('bg-emerald-600');
+        } else {
+          btn.classList.remove('bg-emerald-600', 'hidden');
+          btn.classList.add('flex', 'bg-red-500', 'animate-pulse');
+        }
       }
     });
   </script>
@@ -203,19 +326,19 @@ async def index(request: Request):
         resp.delete_cookie("player_id")
         return resp
 
-    return _INDEX_HTML.replace("{PLAYER_NAME}", row["name"])
+    return _INDEX_HTML.replace("{PLAYER_NAME}", row["name"]).replace("{INPUT_AREA}", _build_input_area_html(locked=False))
 
 
 @app.get("/chat_fragment", response_class=HTMLResponse)
 async def chat_fragment():
     conn = get_connection()
     rows = conn.execute(
-        "SELECT sender, message_text, is_action, action_type FROM chat_history ORDER BY id DESC"
+        "SELECT sender, message_text, is_action, action_type FROM chat_history ORDER BY id ASC LIMIT 100"
     ).fetchall()
     conn.close()
     html = "".join(
         _render_message(r["sender"], r["message_text"], bool(r["is_action"]))
-        for r in rows[-50:]
+        for r in rows
     )
     return html or '<div class="text-gray-500 text-sm italic">История пуста. Напишите что-нибудь!</div>'
 
@@ -301,11 +424,20 @@ async def timer():
 
     if remaining.total_seconds() <= 0:
         reset_timer()
+        clear_oob = '<div id="timer-bar" hx-swap-oob="true"></div>'
+        try:
+            await broadcast_message(clear_oob)
+        except Exception:
+            pass
         asyncio.ensure_future(_auto_respond())
-        return ""
+        return clear_oob
 
     secs = int(remaining.total_seconds())
-    return f'<div id="timer-bar" class="text-center text-sm text-gray-400 py-1 bg-gray-800 border-t border-gray-700">Мастер внимательно слушает и ждет действий группы: осталось {secs} сек.</div>'
+    return (
+        f'<div id="timer-bar" hx-swap-oob="true" '
+        f'class="text-center text-sm text-gray-400 py-1 bg-gray-800 border-t border-gray-700">'
+        f'Мастер внимательно слушает и ждет действий группы: осталось {secs} сек.</div>'
+    )
 
 
 async def _auto_respond():
@@ -315,17 +447,24 @@ async def _auto_respond():
     ).fetchone()
     conn.close()
     if row is None:
+        unlocked = _build_input_area_html(locked=False, oob=True)
+        await broadcast_message(unlocked)
         return
+    locked = _build_input_area_html(locked=True, oob=True)
+    await broadcast_message(locked)
     try:
         turn = await process_player_action(
             row["player_id"] or 0,
             row["message_text"],
             save_message=False,
         )
-        html = _build_chat_response(turn, limit=2)
-        await broadcast_message(html)
     except Exception as e:
         print(f"ERROR IN _auto_respond: {e}")
+        unlocked = _build_input_area_html(locked=False, oob=True)
+        await broadcast_message(unlocked)
+        return
+    html = _build_chat_response(turn) + _build_input_area_html(locked=False, oob=True)
+    await broadcast_message(html)
 
 
 @app.post("/send_message", response_class=HTMLResponse)
@@ -343,7 +482,16 @@ async def send_message(request: Request, text: str = Form(...)):
         print(f"ERROR IN ENDPOINT /send_message: {e}")
         return '<div class="text-red-400 text-sm">Ошибка отправки сообщения</div>'
 
-    return _render_message(player_name, text, is_action=False)
+    result = _render_message(player_name, text, is_action=False)
+    timer_oob = _build_timer_bar_oob()
+    if timer_oob:
+        result += timer_oob
+        try:
+            await broadcast_message(timer_oob)
+        except Exception as e:
+            print(f"ERROR broadcasting timer: {e}")
+
+    return result
 
 
 @app.post("/declare_action", response_class=HTMLResponse)
@@ -361,27 +509,35 @@ async def declare_action(request: Request, text: str = Form(...)):
         print(f"ERROR IN ENDPOINT /declare_action: {e}")
         return '<div class="text-red-400 text-sm">Ошибка обработки действия</div>'
 
-    return _render_message(player_name, text, is_action=True)
+    result = _render_message(player_name, text, is_action=True)
+    timer_oob = _build_timer_bar_oob()
+    if timer_oob:
+        result += timer_oob
+        try:
+            await broadcast_message(timer_oob)
+        except Exception as e:
+            print(f"ERROR broadcasting timer: {e}")
+
+    return result
 
 
-def _build_chat_response(turn, limit=2):
+def _build_chat_response(turn):
     conn = get_connection()
     rows = conn.execute(
-        "SELECT sender, message_text, is_action FROM chat_history ORDER BY id DESC LIMIT ?",
-        (limit,),
+        "SELECT sender, message_text, is_action FROM chat_history ORDER BY id DESC LIMIT 100"
     ).fetchall()
     player_rows = conn.execute("SELECT * FROM players").fetchall()
     conn.close()
 
-    parts = []
-    for r in reversed(rows):
-        parts.append(_render_message(r["sender"], r["message_text"], bool(r["is_action"])))
+    parts = [_render_message(r["sender"], r["message_text"], bool(r["is_action"])) for r in rows]
     parts.append(_render_message("GM", turn.narrative_text))
 
     panel = "".join(_render_player_card(r) for r in player_rows)
 
+    messages_html = "".join(parts)
+
     return (
-        "".join(parts)
+        f'<div id="chat-messages" hx-swap-oob="beforeend">{messages_html}</div>'
         + f'<div id="players-panel" hx-swap-oob="true">{panel}</div>'
         + f'<div id="game-status" hx-swap-oob="true" class="text-sm px-3 py-1 rounded-full '
         + ('bg-red-700 text-red-200">combat' if turn.game_state_trigger == "combat_start"
@@ -499,6 +655,24 @@ async def admin_toggle_status():
 
     await _broadcast_panel_and_status()
     return ""
+
+
+def _build_timer_bar_oob() -> str:
+    sess = get_session()
+    if not sess or not sess.timer_ends_at:
+        return ""
+    try:
+        remaining = datetime.fromisoformat(sess.timer_ends_at) - datetime.utcnow()
+    except Exception:
+        return ""
+    if remaining.total_seconds() <= 0:
+        return ""
+    secs = int(remaining.total_seconds())
+    return (
+        f'<div id="timer-bar" hx-swap-oob="true" '
+        f'class="text-center text-sm text-gray-400 py-1 bg-gray-800 border-t border-gray-700">'
+        f'Мастер внимательно слушает и ждет действий группы: осталось {secs} сек.</div>'
+    )
 
 
 async def _broadcast_panel_and_status():
