@@ -7,13 +7,6 @@
           <span class="text-xs text-emerald-400">Это вы</span>
         </div>
         <div class="flex gap-2 mt-2">
-          <form method="post" action="/login">
-            <input type="hidden" name="player_id" value="{{ player.id }}">
-            <button type="submit" {% if not game_active %}disabled{% endif %}
-                    class="bg-amber-600 hover:bg-amber-500 text-white px-3 py-1 rounded text-xs font-medium transition {% if not game_active %}opacity-50 cursor-not-allowed{% endif %}">
-              Играть
-            </button>
-          </form>
           <button type="button"
                   hx-post="/lobby/remove_player" hx-vals='{"player_id": "{{ player.id }}"}' hx-target="#lobby-slots" hx-swap="innerHTML"
                   class="bg-red-700 hover:bg-red-600 text-white px-3 py-1 rounded text-xs font-medium transition">

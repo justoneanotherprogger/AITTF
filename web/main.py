@@ -117,11 +117,18 @@ _INDEX_HTML = """<!DOCTYPE html>
   <script src="https://unpkg.com/htmx.org@2.0.4"></script>
   <script src="https://unpkg.com/htmx.org@2.0.4/dist/ext/ws.js"></script>
   <script src="https://cdn.tailwindcss.com"></script>
-  <style>
-    .htmx-indicator { opacity: 0; transition: opacity .2s; }
-    .htmx-request .htmx-indicator { opacity: 1; }
-    .htmx-request.htmx-indicator { opacity: 1; }
-  </style>
+    <style>
+      .htmx-indicator { opacity: 0; transition: opacity .2s; }
+      .htmx-request .htmx-indicator { opacity: 1; }
+      .htmx-request.htmx-indicator { opacity: 1; }
+      #chat-messages { display: flex; flex-direction: column; }
+      #chat-messages > [data-author-id]:not([data-author-id="system"]) {
+        align-self: flex-end;
+      }
+      #chat-messages > [data-author-id] {
+        max-width: 80%;
+      }
+    </style>
   <title>AI Tabletop Framework</title>
 </head>
 <body class="bg-gray-900 text-gray-100 h-screen flex flex-col"
@@ -134,7 +141,7 @@ _INDEX_HTML = """<!DOCTYPE html>
     <a href="/logout" class="text-xs text-gray-400 hover:text-gray-200 underline">Сменить персонажа</a>
     <a href="/admin" class="text-xs text-gray-500 hover:text-gray-300 underline ml-3">Admin</a>
     <button type="button" hx-post="/api/game/reset" hx-disabled-elt="this"
-            onclick="if(!confirm('Вы уверены, что хотите удалить текущую игру и начать заново?')) return false;"
+            hx-confirm="Вы уверены, что хотите удалить текущую игру и начать заново?"
             class="text-xs text-red-400 hover:text-red-300 underline ml-3">Сбросить партию</button>
     <span id="game-status" class="text-sm px-3 py-1 rounded-full bg-emerald-700 text-emerald-200">exploration</span>
   </header>
@@ -157,7 +164,12 @@ _INDEX_HTML = """<!DOCTYPE html>
         ↓
       </button>
 
-      <div id="timer-bar"></div>
+      <div id="timer-bar" class="bg-gray-800 border-t border-gray-700 px-4 py-3 text-center text-sm text-amber-300 font-medium hidden"></div>
+
+      <div id="__timer-reset" style="display:none"></div>
+      <div id="__timer-stop" style="display:none"></div>
+      <div id="__lock-input" style="display:none"></div>
+      <div id="__unlock-input" style="display:none"></div>
 
       <div id="input-area">{INPUT_AREA}</div>
     </main>
@@ -201,7 +213,7 @@ _INDEX_HTML = """<!DOCTYPE html>
           userHasScrolledUp = true;
           scrollBtn.classList.remove('hidden');
           scrollBtn.classList.add('flex');
-          setPulse();
+          clearPulse();
         }
       });
 
@@ -218,19 +230,8 @@ _INDEX_HTML = """<!DOCTYPE html>
         }, 50);
       }
 
-      // MutationObserver: fix alignment of new messages instantly
+      // MutationObserver: scroll to bottom on new content
       var observer = new MutationObserver(function(mutations) {
-        for (var i = 0; i < mutations.length; i++) {
-          for (var j = 0; j < mutations[i].addedNodes.length; j++) {
-            var node = mutations[i].addedNodes[j];
-            if (node.nodeType === 1 && node.hasAttribute && node.hasAttribute('data-author-id')) {
-              if (node.getAttribute('data-author-id') === CURRENT_PLAYER_ID) {
-                node.classList.remove('justify-start');
-                node.classList.add('justify-end');
-              }
-            }
-          }
-        }
         onNewContent();
       });
       if (chat) {
@@ -250,6 +251,7 @@ _INDEX_HTML = """<!DOCTYPE html>
           if (timerRemaining <= 0) {
             clearInterval(timerInterval);
             timerInterval = null;
+            timerBar.classList.add('hidden');
             timerBar.innerHTML = '';
             fetch('/skip_turn', {method: 'POST'});
             return;
@@ -261,11 +263,12 @@ _INDEX_HTML = """<!DOCTYPE html>
       function stopTimer() {
         if (timerInterval) clearInterval(timerInterval);
         timerInterval = null;
-        timerBar.innerHTML = '';
+        timerBar.classList.add('hidden');
       }
 
       function updateTimerDisplay() {
-        timerBar.innerHTML = 'Мастер внимательно слушает и ждет действий группы: осталось ' + timerRemaining + ' сек.';
+        timerBar.classList.remove('hidden');
+        timerBar.innerHTML = '⏳ Мастер внимательно слушает и ждет действий группы: осталось <span class="text-amber-200 font-bold">' + timerRemaining + '</span> сек.';
       }
 
       function setInputLock(locked) {
@@ -294,8 +297,11 @@ _INDEX_HTML = """<!DOCTYPE html>
         }
       });
     })();
-    // Clear input after any HTMX request from the two buttons
     document.body.addEventListener('htmx:afterRequest', function(evt) {
+      if (evt.detail.pathInfo.requestPath === '/send_message' ||
+          evt.detail.pathInfo.requestPath === '/declare_action') {
+        startTimer(15);
+      }
       var input = document.getElementById('message-input');
       if (input && (evt.detail.pathInfo.requestPath === '/send_message' ||
                     evt.detail.pathInfo.requestPath === '/declare_action')) {
@@ -317,15 +323,16 @@ def _render_message(sender: str, text: str, is_action: bool = False, oob_target:
     is_gm = sender == "GM"
     bg = "bg-amber-700/40 border-amber-600/30" if is_action else ("bg-emerald-700/30 border-emerald-600/20" if is_gm else "bg-gray-700/50 border-gray-600/30")
     label = "GM" if is_gm else (f"{sender} совершает действие" if is_action else sender)
-    oob_attr = f' hx-swap-oob="{oob_target}"' if oob_target else ""
     author_attr = f' data-author-id="{sender_id if sender_id else "system"}"'
-    return (
-        f'<div class="flex justify-start"{author_attr}{oob_attr}>'
-        f'<div class="inline-block max-w-[80%] {bg} border rounded-xl px-4 py-2 text-sm">'
+    inner = (
+        f'<div class="inline-block max-w-[80%] {bg} border rounded-xl px-4 py-2 text-sm"{author_attr}>'
         f'<span class="text-xs font-semibold text-gray-400 block mb-0.5">{label}</span>'
         f'{text}'
-        f'</div></div>'
+        f'</div>'
     )
+    if oob_target:
+        return f'<div hx-swap-oob="{oob_target}">{inner}</div>'
+    return inner
 
 
 def _render_player_card(row) -> str:
@@ -465,7 +472,7 @@ async def choice():
     {cards if cards else '<p class="text-gray-400 text-center">Нет доступных персонажей</p>'}
     <div class="mt-6 text-center">
       <button type="button" hx-post="/api/game/reset" hx-disabled-elt="this"
-              onclick="if(!confirm('Вы уверены, что хотите удалить текущую игру и начать заново?')) return false;"
+              hx-confirm="Вы уверены, что хотите удалить текущую игру и начать заново?"
               class="text-xs text-red-400 hover:text-red-300 underline">Сбросить партию</button>
     </div>
   </div>
@@ -539,14 +546,22 @@ async def lobby_slots(request: Request):
 
 @app.post("/lobby/add_player", response_class=HTMLResponse)
 async def lobby_add_player(request: Request, name: str = Form(...)):
+    pid = request.cookies.get("player_id")
+    if pid:
+        conn = get_connection()
+        existing = conn.execute("SELECT id FROM players WHERE id = ?", (int(pid),)).fetchone()
+        conn.close()
+        if existing:
+            return Response(status_code=400, content="Вы уже создали персонажа")
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("INSERT INTO players (name) VALUES (?)", (name,))
     conn.commit()
     player_id = cur.lastrowid
     conn.close()
-    html = _render_slots(current_player_id=player_id)
-    resp = HTMLResponse(content=html)
+    slots_html = _render_slots(current_player_id=player_id)
+    form_oob = '<div id="lobby-form-area" hx-swap-oob="true"><p class="text-gray-400 text-sm text-center mb-6">Вы уже создали персонажа. Ожидайте старта игры</p></div>'
+    resp = HTMLResponse(content=slots_html + form_oob)
     resp.set_cookie(key="player_id", value=str(player_id), httponly=False)
     asyncio.ensure_future(_broadcast_lobby_refresh())
     return resp
@@ -560,10 +575,24 @@ async def lobby_remove_player(request: Request, player_id: int = Form(...)):
     conn.close()
     pid = request.cookies.get("player_id")
     current = int(pid) if pid else None
-    html = _render_slots(current_player_id=current)
-    resp = HTMLResponse(content=html)
+    slots_html = _render_slots(current_player_id=current)
     if current and current == player_id:
+        form_oob = (
+            '<div id="lobby-form-area" hx-swap-oob="true">'
+            '<form hx-post="/lobby/add_player" hx-target="#lobby-slots" hx-swap="innerHTML"'
+            ' class="flex gap-3 mb-8">'
+            '<input type="text" name="name" placeholder="Имя персонажа" required'
+            ' class="flex-1 bg-gray-800 border border-gray-600 rounded-lg px-4 py-2 text-sm'
+            ' focus:outline-none focus:ring-2 focus:ring-emerald-500">'
+            '<button type="submit"'
+            ' class="bg-emerald-600 hover:bg-emerald-500 text-white px-6 py-2 rounded-lg'
+            ' text-sm font-medium transition">Добавить</button>'
+            '</form></div>'
+        )
+        resp = HTMLResponse(content=slots_html + form_oob)
         resp.delete_cookie("player_id")
+    else:
+        resp = HTMLResponse(content=slots_html)
     asyncio.ensure_future(_broadcast_lobby_refresh())
     return resp
 
@@ -667,12 +696,14 @@ async def generate_world():
         data={"text": phase_zero.initial_narrative_text},
     ))
 
-    # update existing players with generated stats
+    # update existing players with generated stats and archetypes
     conn = get_connection()
     for player in players:
+        archetype = phase_zero.character_classes.get(player["name"], "")
         conn.execute(
-            "UPDATE players SET hp_current = 10, hp_max = 10, stats = ?, class_archetype = '' WHERE name = ?",
-            (json.dumps({s: _DEFAULT_STAT_VALUE for s in phase_zero.character_stats_templates}, ensure_ascii=False), player["name"]),
+            "UPDATE players SET hp_current = 10, hp_max = 10, stats = ?, class_archetype = ? WHERE name = ?",
+            (json.dumps({s: _DEFAULT_STAT_VALUE for s in phase_zero.character_stats_templates}, ensure_ascii=False),
+             archetype, player["name"]),
         )
     conn.commit()
 
@@ -685,9 +716,11 @@ async def generate_world():
     conn.commit()
     conn.close()
 
-    # save initial narrative as the first chat message
-    gm_msg = ChatMessageModel(sender="GM", message_text=phase_zero.initial_narrative_text, is_action=False, timestamp="")
-    add_chat_message(gm_msg)
+    # save setting, conflict and initial narrative as separate chat messages
+    setting_text = f"<strong>📖 СЕТТИНГ: {phase_zero.setting_name}</strong><br><br>{phase_zero.setting_description}"
+    add_chat_message(ChatMessageModel(sender="GM", message_text=setting_text, is_action=False, timestamp=""))
+    add_chat_message(ChatMessageModel(sender="GM", message_text=f"<strong>⚔️ СУТЬ КОНФЛИКТА</strong><br><br>{phase_zero.global_conflict}", is_action=False, timestamp=""))
+    add_chat_message(ChatMessageModel(sender="GM", message_text=phase_zero.initial_narrative_text, is_action=False, timestamp=""))
 
     return Response(headers={"HX-Redirect": "/"})
 
@@ -773,9 +806,10 @@ async def send_message(request: Request, text: str = Form(...)):
         return Response(status_code=500)
 
     rendered = _render_message(player_name, text, is_action=False, oob_target="beforeend:#chat-messages", sender_id=str(player_id))
-    rendered += '<div id="__timer-reset" hx-swap-oob="true" style="display:none"></div>'
+    timer_reset = '<div id="__timer-reset" hx-swap-oob="true" style="display:none"></div>'
     await manager.broadcast_html(rendered)
-    return '<input id="message-input" type="text" name="text" value="" class="flex-1 bg-gray-700 border border-gray-600 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500" hx-swap-oob="true">'
+    await manager.broadcast_html(timer_reset)
+    return timer_reset + '<input id="message-input" type="text" name="text" value="" class="flex-1 bg-gray-700 border border-gray-600 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500" hx-swap-oob="true">'
 
 
 @app.post("/declare_action", response_class=HTMLResponse)
@@ -794,9 +828,10 @@ async def declare_action(request: Request, text: str = Form(...)):
         return Response(status_code=500)
 
     rendered = _render_message(player_name, text, is_action=True, oob_target="beforeend:#chat-messages", sender_id=str(player_id))
-    rendered += '<div id="__timer-reset" hx-swap-oob="true" style="display:none"></div>'
+    timer_reset = '<div id="__timer-reset" hx-swap-oob="true" style="display:none"></div>'
     await manager.broadcast_html(rendered)
-    return '<input id="message-input" type="text" name="text" value="" class="flex-1 bg-gray-700 border border-gray-600 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500" hx-swap-oob="true">'
+    await manager.broadcast_html(timer_reset)
+    return timer_reset + '<input id="message-input" type="text" name="text" value="" class="flex-1 bg-gray-700 border border-gray-600 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500" hx-swap-oob="true">'
 
 
 @app.post("/skip_turn", response_class=HTMLResponse)
@@ -831,7 +866,7 @@ async def admin():
           <td class="p-2 font-medium">{r["name"]}</td>
           <td class="p-2 text-xs text-gray-400">{r["class_archetype"] or "—"}</td>
           <td class="p-2">
-            <form method="post" action="/admin/update_player" class="flex items-center gap-2">
+            <form hx-post="/admin/update_player" hx-swap="none" class="flex items-center gap-2">
               <input type="hidden" name="player_id" value="{r["id"]}">
               HP <input type="number" name="hp_current" value="{r["hp_current"]}"
                      class="w-16 bg-gray-700 border border-gray-600 rounded px-1 py-0.5 text-sm text-center">
@@ -859,11 +894,11 @@ async def admin():
 
     <section class="mb-8">
       <h2 class="text-lg font-semibold mb-3">Статус игры</h2>
-      <div class="flex items-center gap-4 bg-gray-800 border border-gray-700 rounded-lg p-4">
+      <div id="admin-status-block" class="flex items-center gap-4 bg-gray-800 border border-gray-700 rounded-lg p-4">
         <span class="text-sm">Текущий статус:</span>
-        <span id="admin-game-status" class="text-sm px-3 py-1 rounded-full
+        <span class="text-sm px-3 py-1 rounded-full
           {'bg-red-700 text-red-200' if status == 'combat' else 'bg-emerald-700 text-emerald-200'}">{status}</span>
-        <form method="post" action="/admin/toggle_status">
+        <form hx-post="/admin/toggle_status" hx-target="#admin-status-block" hx-swap="outerHTML">
           <button type="submit"
                   class="bg-amber-600 hover:bg-amber-500 text-white px-4 py-2 rounded-lg text-sm transition">
             Переключить в {next_status}
@@ -922,7 +957,19 @@ async def admin_toggle_status():
     conn.close()
 
     await _broadcast_panel_and_status()
-    return ""
+
+    next_status = "exploration" if new == "combat" else "combat"
+    status_class = "bg-red-700 text-red-200" if new == "combat" else "bg-emerald-700 text-emerald-200"
+    return f"""<div id="admin-status-block" class="flex items-center gap-4 bg-gray-800 border border-gray-700 rounded-lg p-4">
+        <span class="text-sm">Текущий статус:</span>
+        <span class="text-sm px-3 py-1 rounded-full {status_class}">{new}</span>
+        <form hx-post="/admin/toggle_status" hx-target="#admin-status-block" hx-swap="outerHTML">
+          <button type="submit"
+                  class="bg-amber-600 hover:bg-amber-500 text-white px-4 py-2 rounded-lg text-sm transition">
+            Переключить в {next_status}
+          </button>
+        </form>
+      </div>"""
 
 
 async def _broadcast_panel_and_status():

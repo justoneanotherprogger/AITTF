@@ -142,7 +142,7 @@ def build_player_descriptions() -> list[str]:
     rows = conn.execute("SELECT * FROM players").fetchall()
     conn.close()
     return [
-        f"Имя: {r['name']}, Предыстория: {r['backstory']}"
+        f"Имя персонажа: {r['name']}\nПредыстория этого персонажа: {r['backstory']}"
         for r in rows
     ]
 

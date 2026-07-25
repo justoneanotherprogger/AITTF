@@ -66,7 +66,7 @@
 
     <div class="mt-8 text-center">
       <button type="button" hx-post="/api/game/reset" hx-disabled-elt="this"
-              onclick="if(!confirm('Вы уверены, что хотите удалить текущую игру и начать заново?')) return false;"
+              hx-confirm="Вы уверены, что хотите удалить текущую игру и начать заново?"
               class="text-xs text-red-400 hover:text-red-300 underline">Сбросить партию</button>
     </div>
   </div>
