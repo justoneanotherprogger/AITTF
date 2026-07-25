@@ -130,7 +130,6 @@ _INDEX_HTML = """<!DOCTYPE html>
     <div class="flex items-center gap-4">
       <h1 class="text-xl font-bold tracking-wide">AI Tabletop Framework</h1>
       <span id="current-player" class="text-sm text-emerald-300">{PLAYER_NAME}</span>
-      <div id="current-player-id" data-id="{CURRENT_PLAYER_ID}" class="hidden"></div>
     </div>
     <a href="/logout" class="text-xs text-gray-400 hover:text-gray-200 underline">Сменить персонажа</a>
     <a href="/admin" class="text-xs text-gray-500 hover:text-gray-300 underline ml-3">Admin</a>
@@ -215,23 +214,7 @@ _INDEX_HTML = """<!DOCTYPE html>
       });
 
       // new content arrived — force scroll unless user scrolled up
-      function alignMessages() {
-        var myIdEl = document.getElementById('current-player-id');
-        if (!myIdEl) return;
-        var myId = myIdEl.getAttribute('data-id');
-        document.querySelectorAll('#chat-messages > div[data-sender-id]').forEach(function(el) {
-          if (el.getAttribute('data-sender-id') === myId) {
-            el.classList.add('justify-end');
-            el.classList.remove('justify-start');
-          } else {
-            el.classList.remove('justify-end');
-            el.classList.add('justify-start');
-          }
-        });
-      }
-
       function onNewContent() {
-        alignMessages();
         setTimeout(function() {
           if (userHasScrolledUp) {
             setPulse();
@@ -280,12 +263,12 @@ _INDEX_HTML = """<!DOCTYPE html>
 
 def _render_message(sender: str, text: str, is_action: bool = False, oob_target: str = "", sender_id: str = "") -> str:
     is_gm = sender == "GM"
-    align = "flex justify-start"
+    align = "flex justify-start" if is_gm else "flex justify-end"
     bg = "bg-amber-700/40 border-amber-600/30" if is_action else ("bg-emerald-700/30 border-emerald-600/20" if is_gm else "bg-gray-700/50 border-gray-600/30")
     label = "GM" if is_gm else (f"{sender} совершает действие" if is_action else sender)
     oob_attr = f' hx-swap-oob="{oob_target}"' if oob_target else ""
     return (
-        f'<div class="{align}" data-sender="{sender}" data-sender-id="{sender_id}"{oob_attr}>'
+        f'<div class="{align}"{oob_attr}>'
         f'<div class="inline-block max-w-[80%] {bg} border rounded-xl px-4 py-2 text-sm">'
         f'<span class="text-xs font-semibold text-gray-400 block mb-0.5">{label}</span>'
         f'{text}'
@@ -509,7 +492,7 @@ async def lobby_add_player(request: Request, name: str = Form(...)):
     conn.close()
     html = _render_slots(current_player_id=player_id)
     resp = HTMLResponse(content=html)
-    resp.set_cookie(key="player_id", value=str(player_id), httponly=True)
+    resp.set_cookie(key="player_id", value=str(player_id), httponly=False)
     resp.headers["HX-Refresh"] = "true"
     return resp
 
