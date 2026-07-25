@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+  <script src="https://unpkg.com/htmx.org@2.0.4/dist/ext/ws.js"></script>
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
     #generation-spinner.htmx-request { opacity: 1 !important; }
@@ -13,7 +14,8 @@
   </style>
   <title>Лобби — AI Tabletop Framework</title>
 </head>
-<body class="bg-gray-900 text-gray-100 min-h-screen flex items-center justify-center">
+<body class="bg-gray-900 text-gray-100 min-h-screen flex items-center justify-center"
+      hx-ext="ws" ws-connect="/ws/chat">
   <div class="w-full max-w-2xl p-6">
     <h1 class="text-3xl font-bold text-center mb-2">AI Tabletop Framework</h1>
     <p class="text-gray-400 text-center mb-8">Добавьте персонажей, чтобы начать игру</p>
@@ -32,8 +34,7 @@
       </form>
     {% endif %}
 
-    <div id="lobby-slots" hx-get="/lobby/slots" hx-trigger="every 1s" hx-swap="innerHTML"
-         hx-on::before-request="if(event.detail.elt.id==='start-btn')this.removeAttribute('hx-get')">
+    <div id="lobby-slots">
       {% include "slots.html" %}
     </div>
 
@@ -50,9 +51,17 @@
 
     <div class="mt-4 text-center">
       <button type="button" hx-post="/api/game/reset" hx-disabled-elt="this"
-              onclick="if(!confirm('Вы уверены, что хотите удалить текущую игру и начать заново?')) return false; var s=document.getElementById('lobby-slots');if(s)s.removeAttribute('hx-get');"
+              onclick="if(!confirm('Вы уверены, что хотите удалить текущую игру и начать заново?')) return false;"
               class="text-xs text-red-400 hover:text-red-300 underline">Сбросить партию</button>
     </div>
   </div>
+  <script>
+    document.body.addEventListener('htmx:oobBeforeSwap', function(evt) {
+      if (evt.detail.elt.id === '__refresh-lobby-slots') {
+        htmx.ajax('GET', '/lobby/slots', {target: '#lobby-slots', swap: 'innerHTML'});
+        evt.preventDefault();
+      }
+    });
+  </script>
 </body>
 </html>

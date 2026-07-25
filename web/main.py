@@ -10,7 +10,7 @@ import uvicorn
 
 load_dotenv()
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from db.database import (
     init_db, get_connection, add_chat_message, get_session,
@@ -164,6 +164,7 @@ _INDEX_HTML = """<!DOCTYPE html>
   </div>
   <script>
     (function() {
+      var CURRENT_PLAYER_ID = '{CURRENT_PLAYER_ID}';
       var chat = document.getElementById('chat-messages');
       var scrollBtn = document.getElementById('scroll-bottom-btn');
       var userHasScrolledUp = false;
@@ -206,13 +207,6 @@ _INDEX_HTML = """<!DOCTYPE html>
 
       scrollBtn.addEventListener('click', scrollToBottom);
 
-      // scroll to bottom on any HTMX settle into chat-messages
-      document.body.addEventListener('htmx:afterSettle', function(evt) {
-        if (evt.detail.target && evt.detail.target.id === 'chat-messages') {
-          onNewContent();
-        }
-      });
-
       // new content arrived — force scroll unless user scrolled up
       function onNewContent() {
         setTimeout(function() {
@@ -222,6 +216,56 @@ _INDEX_HTML = """<!DOCTYPE html>
             scrollToBottom();
           }
         }, 50);
+      }
+
+      // MutationObserver: fix alignment of new messages instantly
+      var observer = new MutationObserver(function(mutations) {
+        for (var i = 0; i < mutations.length; i++) {
+          for (var j = 0; j < mutations[i].addedNodes.length; j++) {
+            var node = mutations[i].addedNodes[j];
+            if (node.nodeType === 1 && node.hasAttribute && node.hasAttribute('data-author-id')) {
+              if (node.getAttribute('data-author-id') === CURRENT_PLAYER_ID) {
+                node.classList.remove('justify-start');
+                node.classList.add('justify-end');
+              }
+            }
+          }
+        }
+        onNewContent();
+      });
+      if (chat) {
+        observer.observe(chat, {childList: true});
+      }
+
+      var timerBar = document.getElementById('timer-bar');
+      var timerRemaining = 0;
+      var timerInterval = null;
+
+      function startTimer(secs) {
+        timerRemaining = secs;
+        updateTimerDisplay();
+        if (timerInterval) clearInterval(timerInterval);
+        timerInterval = setInterval(function() {
+          timerRemaining--;
+          if (timerRemaining <= 0) {
+            clearInterval(timerInterval);
+            timerInterval = null;
+            timerBar.innerHTML = '';
+            fetch('/skip_turn', {method: 'POST'});
+            return;
+          }
+          updateTimerDisplay();
+        }, 1000);
+      }
+
+      function stopTimer() {
+        if (timerInterval) clearInterval(timerInterval);
+        timerInterval = null;
+        timerBar.innerHTML = '';
+      }
+
+      function updateTimerDisplay() {
+        timerBar.innerHTML = 'Мастер внимательно слушает и ждет действий группы: осталось ' + timerRemaining + ' сек.';
       }
 
       function setInputLock(locked) {
@@ -238,6 +282,14 @@ _INDEX_HTML = """<!DOCTYPE html>
         }
         if (evt.detail.shouldSwap && evt.detail.elt.id === '__unlock-input') {
           setInputLock(false);
+          evt.preventDefault();
+        }
+        if (evt.detail.shouldSwap && evt.detail.elt.id === '__timer-reset') {
+          startTimer(15);
+          evt.preventDefault();
+        }
+        if (evt.detail.shouldSwap && evt.detail.elt.id === '__timer-stop') {
+          stopTimer();
           evt.preventDefault();
         }
       });
@@ -263,12 +315,12 @@ _INDEX_HTML = """<!DOCTYPE html>
 
 def _render_message(sender: str, text: str, is_action: bool = False, oob_target: str = "", sender_id: str = "") -> str:
     is_gm = sender == "GM"
-    align = "flex justify-start" if is_gm else "flex justify-end"
     bg = "bg-amber-700/40 border-amber-600/30" if is_action else ("bg-emerald-700/30 border-emerald-600/20" if is_gm else "bg-gray-700/50 border-gray-600/30")
     label = "GM" if is_gm else (f"{sender} совершает действие" if is_action else sender)
     oob_attr = f' hx-swap-oob="{oob_target}"' if oob_target else ""
+    author_attr = f' data-author-id="{sender_id if sender_id else "system"}"'
     return (
-        f'<div class="{align}"{oob_attr}>'
+        f'<div class="flex justify-start"{author_attr}{oob_attr}>'
         f'<div class="inline-block max-w-[80%] {bg} border rounded-xl px-4 py-2 text-sm">'
         f'<span class="text-xs font-semibold text-gray-400 block mb-0.5">{label}</span>'
         f'{text}'
@@ -302,7 +354,6 @@ def _render_player_card(row) -> str:
 @app.on_event("startup")
 def startup():
     init_db()
-    asyncio.create_task(_timer_loop())
 
 
 @app.websocket("/ws/chat")
@@ -466,6 +517,10 @@ async def backstories_page(request: Request):
     })
 
 
+async def _broadcast_lobby_refresh():
+    await manager.broadcast_html('<div id="__refresh-lobby-slots" hx-swap-oob="true" style="display:none"></div>')
+
+
 def _render_slots(current_player_id: int | None = None):
     conn = get_connection()
     players = conn.execute("SELECT * FROM players").fetchall()
@@ -493,7 +548,7 @@ async def lobby_add_player(request: Request, name: str = Form(...)):
     html = _render_slots(current_player_id=player_id)
     resp = HTMLResponse(content=html)
     resp.set_cookie(key="player_id", value=str(player_id), httponly=False)
-    resp.headers["HX-Refresh"] = "true"
+    asyncio.ensure_future(_broadcast_lobby_refresh())
     return resp
 
 
@@ -509,6 +564,7 @@ async def lobby_remove_player(request: Request, player_id: int = Form(...)):
     resp = HTMLResponse(content=html)
     if current and current == player_id:
         resp.delete_cookie("player_id")
+    asyncio.ensure_future(_broadcast_lobby_refresh())
     return resp
 
 
@@ -659,37 +715,6 @@ async def lobby_start():
     return Response(headers={"HX-Redirect": "/backstories"})
 
 
-async def _timer_loop():
-    while True:
-        await asyncio.sleep(1)
-        sess = get_session()
-        if not sess or not sess.timer_ends_at:
-            continue
-        try:
-            remaining = datetime.fromisoformat(sess.timer_ends_at) - datetime.utcnow()
-        except Exception:
-            continue
-        if remaining.total_seconds() <= 0:
-            reset_timer()
-            clear_oob = '<div id="timer-bar" hx-swap-oob="true"></div>'
-            try:
-                await manager.broadcast_html(clear_oob)
-            except Exception:
-                pass
-            asyncio.ensure_future(_auto_respond())
-        else:
-            secs = int(remaining.total_seconds())
-            timer_html = (
-                f'<div id="timer-bar" hx-swap-oob="true" '
-                f'class="text-center text-sm text-gray-400 py-1 bg-gray-800 border-t border-gray-700">'
-                f'Мастер внимательно слушает и ждет действий группы: осталось {secs} сек.</div>'
-            )
-            try:
-                await manager.broadcast_html(timer_html)
-            except Exception:
-                pass
-
-
 async def _auto_respond():
     conn = get_connection()
     row = conn.execute(
@@ -727,6 +752,7 @@ async def _auto_respond():
         + f'<div id="players-panel" hx-swap-oob="true">{panel}</div>'
         + f'<div id="game-status" hx-swap-oob="true" class="text-sm px-3 py-1 rounded-full {status_cls}">{status}</div>'
         + _build_input_area_html(locked=False, oob=True)
+        + '<div id="__timer-stop" hx-swap-oob="true" style="display:none"></div>'
     )
     await manager.broadcast_html(html)
 
@@ -747,9 +773,7 @@ async def send_message(request: Request, text: str = Form(...)):
         return Response(status_code=500)
 
     rendered = _render_message(player_name, text, is_action=False, oob_target="beforeend:#chat-messages", sender_id=str(player_id))
-    timer_oob = _build_timer_bar_oob()
-    if timer_oob:
-        rendered += timer_oob
+    rendered += '<div id="__timer-reset" hx-swap-oob="true" style="display:none"></div>'
     await manager.broadcast_html(rendered)
     return '<input id="message-input" type="text" name="text" value="" class="flex-1 bg-gray-700 border border-gray-600 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500" hx-swap-oob="true">'
 
@@ -770,11 +794,25 @@ async def declare_action(request: Request, text: str = Form(...)):
         return Response(status_code=500)
 
     rendered = _render_message(player_name, text, is_action=True, oob_target="beforeend:#chat-messages", sender_id=str(player_id))
-    timer_oob = _build_timer_bar_oob()
-    if timer_oob:
-        rendered += timer_oob
+    rendered += '<div id="__timer-reset" hx-swap-oob="true" style="display:none"></div>'
     await manager.broadcast_html(rendered)
     return '<input id="message-input" type="text" name="text" value="" class="flex-1 bg-gray-700 border border-gray-600 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500" hx-swap-oob="true">'
+
+
+@app.post("/skip_turn", response_class=HTMLResponse)
+async def skip_turn():
+    sess = get_session()
+    if not sess or not sess.timer_ends_at:
+        return ""
+    try:
+        remaining = datetime.fromisoformat(sess.timer_ends_at) - datetime.utcnow()
+    except Exception:
+        remaining = timedelta(seconds=0)
+    if remaining.total_seconds() > 1:
+        return ""
+    reset_timer()
+    asyncio.ensure_future(_auto_respond())
+    return ""
 
 
 @app.get("/admin", response_class=HTMLResponse)
@@ -885,24 +923,6 @@ async def admin_toggle_status():
 
     await _broadcast_panel_and_status()
     return ""
-
-
-def _build_timer_bar_oob() -> str:
-    sess = get_session()
-    if not sess or not sess.timer_ends_at:
-        return ""
-    try:
-        remaining = datetime.fromisoformat(sess.timer_ends_at) - datetime.utcnow()
-    except Exception:
-        return ""
-    if remaining.total_seconds() <= 0:
-        return ""
-    secs = int(remaining.total_seconds())
-    return (
-        f'<div id="timer-bar" hx-swap-oob="true" '
-        f'class="text-center text-sm text-gray-400 py-1 bg-gray-800 border-t border-gray-700">'
-        f'Мастер внимательно слушает и ждет действий группы: осталось {secs} сек.</div>'
-    )
 
 
 async def _broadcast_panel_and_status():
