@@ -17,7 +17,7 @@ poetry install
 
 ```env
 API_KEY=your_api_key_here
-BASE_URL=https://opencode.ai/zen/go/v1
+BASE_URL=https://opencode.ai/zen/v1
 MODEL=deepseek-v4-flash-free
 ```
 

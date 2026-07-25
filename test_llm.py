@@ -8,7 +8,7 @@ load_dotenv()
 
 async def main() -> None:
     api_key = os.getenv("API_KEY") or os.getenv("OPENAI_API_KEY", "")
-    base_url = (os.getenv("BASE_URL") or os.getenv("OPENAI_BASE_URL", "https://opencode.ai/zen/go/v1")).rstrip("/")
+    base_url = (os.getenv("BASE_URL") or os.getenv("OPENAI_BASE_URL", "https://opencode.ai/zen/v1")).rstrip("/")
     model = os.getenv("MODEL") or os.getenv("OPENAI_MODEL", "deepseek-v4-flash-free")
 
     if not api_key:
