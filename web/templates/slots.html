@@ -1,0 +1,33 @@
+<div class="w-full grid grid-cols-1 sm:grid-cols-2 gap-4">
+  {% for player in players %}
+  <div class="bg-gray-800 rounded-lg border border-gray-700 p-4 flex flex-col justify-between min-h-[100px]">
+    <div>
+      <div class="font-medium">{{ player.name }}</div>
+      {% if player.class_archetype %}
+      <div class="text-xs text-gray-400">{{ player.class_archetype }}</div>
+      {% endif %}
+    </div>
+    <div class="flex gap-2 mt-2">
+      <form method="post" action="/login">
+        <input type="hidden" name="player_id" value="{{ player.id }}">
+        <button type="submit" {% if not game_active %}disabled{% endif %}
+                class="bg-amber-600 hover:bg-amber-500 text-white px-3 py-1 rounded text-xs font-medium transition {% if not game_active %}opacity-50 cursor-not-allowed{% endif %}">
+          Играть
+        </button>
+      </form>
+      <button type="button"
+              hx-post="/lobby/remove_player" hx-vals='{"player_id": "{{ player.id }}"}' hx-target="#lobby-slots" hx-swap="innerHTML"
+              class="bg-red-700 hover:bg-red-600 text-white px-3 py-1 rounded text-xs font-medium transition">
+        Удалить
+      </button>
+    </div>
+  </div>
+  {% endfor %}
+
+  {% for _ in range(max_slots - players|length) %}
+  <div class="bg-gray-800/50 rounded-lg border border-dashed border-gray-600 p-4 flex items-center justify-center min-h-[100px] text-gray-500 text-sm">
+    Свободный слот
+  </div>
+  {% endfor %}
+  {% if players %}<div id="players-flag" data-has-players="true" style="display:none"></div>{% endif %}
+</div>

@@ -241,3 +241,22 @@ def add_chat_message(msg: ChatMessageModel, player_id: int | None = None) -> int
     msg_id = cur.lastrowid
     conn.close()
     return msg_id
+
+
+def clear_game_data() -> None:
+    conn = get_connection()
+    conn.executescript("""
+        DELETE FROM chat_history;
+        DELETE FROM world_entities;
+        DELETE FROM players;
+        UPDATE game_session SET
+            game_status = 'exploration',
+            turn_order = '[]',
+            current_turn_index = 0,
+            timer_ends_at = '',
+            global_lore = '',
+            setting_blob = '{}'
+        WHERE session_id = 1;
+    """)
+    conn.commit()
+    conn.close()

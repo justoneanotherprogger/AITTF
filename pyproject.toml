@@ -14,6 +14,7 @@ httpx = "*"
 pydantic = "*"
 python-multipart = "*"
 python-dotenv = "*"
+jinja2 = "*"
 websockets = "^16.1.1"
 
 [build-system]

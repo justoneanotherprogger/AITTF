@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    #generation-spinner.htmx-request { opacity: 1 !important; }
+    #start-area { display: none; }
+    body:has(#players-flag) #start-area { display: flex; }
+    #start-btn.htmx-request, #start-btn[disabled] { opacity: 0.5; cursor: not-allowed; pointer-events: none; }
+  </style>
+  <title>Лобби — AI Tabletop Framework</title>
+</head>
+<body class="bg-gray-900 text-gray-100 min-h-screen flex items-center justify-center">
+  <div class="w-full max-w-2xl p-6">
+    <h1 class="text-3xl font-bold text-center mb-2">AI Tabletop Framework</h1>
+    <p class="text-gray-400 text-center mb-8">Добавьте персонажей, чтобы начать игру</p>
+
+    <form hx-post="/lobby/add_player" hx-target="#lobby-slots" hx-swap="innerHTML"
+          class="flex gap-3 mb-8">
+      <input type="text" name="name" placeholder="Имя персонажа" required
+             class="flex-1 bg-gray-800 border border-gray-600 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500">
+      <button type="submit"
+              class="bg-emerald-600 hover:bg-emerald-500 text-white px-6 py-2 rounded-lg text-sm font-medium transition">
+        Добавить
+      </button>
+    </form>
+
+    <div id="lobby-slots" hx-get="/lobby/slots" hx-trigger="every 1s" hx-swap="innerHTML"
+         hx-on::before-request="if(event.detail.elt.id==='start-btn')this.removeAttribute('hx-get')">
+      {% include "slots.html" %}
+    </div>
+
+    <div id="start-area" class="w-full flex justify-center mt-4">
+      <button id="start-btn" type="button"
+              hx-post="/lobby/start"
+              hx-indicator="#generation-spinner"
+              hx-disabled-elt="this"
+              class="bg-amber-600 hover:bg-amber-500 text-white px-8 py-3 rounded-lg text-lg font-medium transition">
+        Начать игру
+      </button>
+      <span id="generation-spinner" class="text-amber-400 text-sm ml-3" style="opacity:0;transition:opacity .2s">Генерация мира...</span>
+    </div>
+
+    <div class="mt-4 text-center">
+      <button type="button" hx-post="/api/game/reset" hx-disabled-elt="this"
+              onclick="if(!confirm('Вы уверены, что хотите удалить текущую игру и начать заново?')) return false; var s=document.getElementById('lobby-slots');if(s)s.removeAttribute('hx-get');"
+              class="text-xs text-red-400 hover:text-red-300 underline">Сбросить партию</button>
+    </div>
+  </div>
+</body>
+</html>

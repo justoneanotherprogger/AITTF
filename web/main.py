@@ -1,19 +1,27 @@
 import json
 import asyncio
 from dotenv import load_dotenv
+from pathlib import Path
 from fastapi import FastAPI, Form, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.templating import Jinja2Templates
 import uvicorn
 
 load_dotenv()
 
 from datetime import datetime
 
-from db.database import init_db, get_connection, add_chat_message, get_session, extend_timer, reset_timer
+from db.database import (
+    init_db, get_connection, add_chat_message, get_session,
+    extend_timer, reset_timer, clear_game_data, add_or_update_entity,
+)
+from models.models import PlayerModel, WorldEntityModel
+from llm.ai_generator import generate_initial_world
 from models.models import ChatMessageModel
 from llm.turn_processor import process_player_action
 
 app = FastAPI()
+templates = Jinja2Templates(directory=Path(__file__).parent / "templates")
 
 _active_ws: list[WebSocket] = []
 
@@ -108,6 +116,9 @@ _INDEX_HTML = """<!DOCTYPE html>
     </div>
     <a href="/logout" class="text-xs text-gray-400 hover:text-gray-200 underline">Сменить персонажа</a>
     <a href="/admin" class="text-xs text-gray-500 hover:text-gray-300 underline ml-3">Admin</a>
+    <button type="button" hx-post="/api/game/reset" hx-disabled-elt="this"
+            onclick="if(!confirm('Вы уверены, что хотите удалить текущую игру и начать заново?')) return false;"
+            class="text-xs text-red-400 hover:text-red-300 underline ml-3">Сбросить партию</button>
     <span id="game-status" class="text-sm px-3 py-1 rounded-full bg-emerald-700 text-emerald-200">exploration</span>
   </header>
 
@@ -306,20 +317,29 @@ async def ws_chat(websocket: WebSocket):
 
 @app.get("/", response_class=HTMLResponse)
 async def index(request: Request):
+    conn = get_connection()
+    players = conn.execute("SELECT * FROM players").fetchall()
+    sess = conn.execute("SELECT game_status FROM game_session WHERE session_id = 1").fetchone()
+    conn.close()
+    game_active = sess and sess["game_status"] == "active"
+
+    if not players:
+        return templates.TemplateResponse(request, "lobby.html", {"players": [], "max_slots": 4, "game_active": False})
+
     pid = request.cookies.get("player_id")
     if not pid:
-        return RedirectResponse(url="/choice")
+        return templates.TemplateResponse(request, "lobby.html", {"players": players, "max_slots": 4, "game_active": game_active})
     try:
         player_id = int(pid)
     except (ValueError, TypeError):
-        return RedirectResponse(url="/choice")
+        return templates.TemplateResponse(request, "lobby.html", {"players": players, "max_slots": 4, "game_active": game_active})
 
     conn = get_connection()
     row = conn.execute("SELECT name FROM players WHERE id=?", (player_id,)).fetchone()
     conn.close()
 
     if not row:
-        resp = RedirectResponse(url="/choice")
+        resp = templates.TemplateResponse(request, "lobby.html", {"players": players, "max_slots": 4, "game_active": game_active})
         resp.delete_cookie("player_id")
         return resp
 
@@ -372,6 +392,7 @@ async def choice():
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <script src="https://unpkg.com/htmx.org@2.0.4"></script>
   <script src="https://cdn.tailwindcss.com"></script>
   <title>Выбор персонажа — AI Tabletop Framework</title>
 </head>
@@ -379,8 +400,12 @@ async def choice():
   <div class="w-full max-w-md p-6">
     <h1 class="text-2xl font-bold mb-6 text-center">Выберите персонажа</h1>
     {cards if cards else '<p class="text-gray-400 text-center">Нет доступных персонажей</p>'}
+    <div class="mt-6 text-center">
+      <button type="button" hx-post="/api/game/reset" hx-disabled-elt="this"
+              onclick="if(!confirm('Вы уверены, что хотите удалить текущую игру и начать заново?')) return false;"
+              class="text-xs text-red-400 hover:text-red-300 underline">Сбросить партию</button>
+    </div>
   </div>
-</body>
 </html>"""
 
 
@@ -403,9 +428,100 @@ async def logout(request: Request):
         conn.execute("UPDATE players SET is_occupied = 0 WHERE id = ?", (int(pid),))
         conn.commit()
         conn.close()
-    resp = RedirectResponse(url="/choice")
+    resp = RedirectResponse(url="/")
     resp.delete_cookie("player_id")
     return resp
+
+
+def _render_slots():
+    conn = get_connection()
+    players = conn.execute("SELECT * FROM players").fetchall()
+    sess = conn.execute("SELECT game_status FROM game_session WHERE session_id = 1").fetchone()
+    conn.close()
+    game_active = sess and sess["game_status"] == "active"
+    tmpl = templates.env.get_template("slots.html")
+    return tmpl.render(players=players, max_slots=4, game_active=game_active)
+
+
+@app.get("/lobby/slots", response_class=HTMLResponse)
+async def lobby_slots():
+    return _render_slots()
+
+
+@app.post("/lobby/add_player", response_class=HTMLResponse)
+async def lobby_add_player(name: str = Form(...)):
+    conn = get_connection()
+    conn.execute("INSERT INTO players (name) VALUES (?)", (name,))
+    conn.commit()
+    conn.close()
+    return _render_slots()
+
+
+@app.post("/lobby/remove_player", response_class=HTMLResponse)
+async def lobby_remove_player(player_id: int = Form(...)):
+    conn = get_connection()
+    conn.execute("DELETE FROM players WHERE id = ?", (player_id,))
+    conn.commit()
+    conn.close()
+    return _render_slots()
+
+
+_DEFAULT_STAT_VALUE = 1
+
+
+@app.post("/lobby/start", response_class=HTMLResponse)
+async def lobby_start():
+    conn = get_connection()
+    players = conn.execute("SELECT * FROM players").fetchall()
+    conn.close()
+
+    if not players:
+        return Response(status_code=400, content="Нет игроков")
+
+    player_inputs = [{"name": r["name"], "description": r["name"]} for r in players]
+    descriptions = [p["description"] for p in player_inputs]
+
+    phase_zero = await generate_initial_world(descriptions)
+
+    # save world entities
+    add_or_update_entity(WorldEntityModel(
+        entity_type="setting", name=phase_zero.setting_name,
+        data={"description": phase_zero.setting_description},
+    ))
+    add_or_update_entity(WorldEntityModel(
+        entity_type="rule", name="global_conflict",
+        data={"description": phase_zero.global_conflict},
+    ))
+    add_or_update_entity(WorldEntityModel(
+        entity_type="rule", name="stats_system",
+        data={"stats": phase_zero.character_stats_templates},
+    ))
+    add_or_update_entity(WorldEntityModel(
+        entity_type="rule", name="initial_narrative",
+        data={"text": phase_zero.initial_narrative_text},
+    ))
+
+    # update existing players with generated stats
+    conn = get_connection()
+    for inp in player_inputs:
+        conn.execute(
+            "UPDATE players SET hp_current = 10, hp_max = 10, stats = ?, class_archetype = '' WHERE name = ?",
+            (json.dumps({s: _DEFAULT_STAT_VALUE for s in phase_zero.character_stats_templates}, ensure_ascii=False), inp["name"]),
+        )
+    conn.commit()
+    conn.close()
+
+    # update game session
+    conn = get_connection()
+    conn.execute(
+        "UPDATE game_session SET game_status = 'active', setting_blob = ?, global_lore = ? WHERE session_id = 1",
+        (json.dumps({"name": phase_zero.setting_name, "description": phase_zero.setting_description}, ensure_ascii=False),
+         phase_zero.global_conflict),
+    )
+    conn.commit()
+    conn.close()
+
+    return Response(headers={"HX-Redirect": "/choice"})
 
 
 @app.get("/timer", response_class=HTMLResponse)
@@ -690,6 +806,14 @@ async def _broadcast_panel_and_status():
         await broadcast_message(html)
     except Exception as e:
         print(f"ERROR broadcasting admin update: {e}")
+
+
+@app.post("/api/game/reset", response_class=HTMLResponse)
+async def reset_game():
+    clear_game_data()
+    resp = Response(status_code=200, headers={"HX-Redirect": "/"})
+    resp.delete_cookie("player_id")
+    return resp
 
 
 if __name__ == "__main__":
