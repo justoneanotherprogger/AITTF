@@ -21,6 +21,14 @@ BASE_URL=https://opencode.ai/zen/go/v1
 MODEL=deepseek-v4-flash-free
 ```
 
+Ключ opencode.ai можно получить в настройках аккаунта на [opencode.ai](https://opencode.ai).
+Для смены провайдера укажите `BASE_URL` другого OpenAI-совместимого API и соответствующую модель:
+| Провайдер | BASE_URL | MODEL |
+|-----------|----------|-------|
+| OpenAI | `https://api.openai.com/v1` | `gpt-4o-mini` |
+| OpenRouter | `https://openrouter.ai/api/v1` | `cognitivecomputations/dolphin3.0-r1-mistral-24b:free` |
+| LM Studio (локально) | `http://localhost:1234/v1` | `*` |
+
 ## Запуск
 
 ```bash
@@ -44,6 +52,7 @@ poetry run python init_game.py
 ### 2. Выбор персонажа
 
 - Откройте `http://localhost:8000` — попадёте на страницу выбора персонажа.
+- Для доступа с других устройств в локальной сети узнайте IP сервера (например, `ipconfig` или `ip a`) и откройте `http://<IP>:8000` — сервер запускается на `0.0.0.0`, фаерволл должен разрешать входящие на порт 8000.
 - Выберите свободного персонажа — установится cookie `player_id`.
 - После выбора откроется игровой чат.
 - `/logout` — сброс выбора, возврат на страницу выбора.
