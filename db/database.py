@@ -24,6 +24,7 @@ def _row_to_player(row: sqlite3.Row) -> PlayerModel:
         stats=json.loads(row["stats"]),
         inventory=json.loads(row["inventory"]),
         status_effects=json.loads(row["status_effects"]),
+        backstory=row["backstory"] if "backstory" in row.keys() else "",
     )
 
 
@@ -73,7 +74,7 @@ def init_db() -> None:
 
         CREATE TABLE IF NOT EXISTS game_session (
             session_id       INTEGER PRIMARY KEY,
-            game_status      TEXT    NOT NULL DEFAULT 'exploration',
+            game_status      TEXT    NOT NULL DEFAULT 'lobby',
             turn_order       TEXT    NOT NULL DEFAULT '[]',
             current_turn_index INTEGER NOT NULL DEFAULT 0,
             global_lore      TEXT    NOT NULL DEFAULT '',
@@ -99,7 +100,7 @@ def init_db() -> None:
         cur.execute(
             """
             INSERT INTO game_session (session_id, game_status)
-            VALUES (1, 'exploration')
+            VALUES (1, 'lobby')
             """
         )
 
@@ -107,6 +108,8 @@ def init_db() -> None:
     cols = {row[1] for row in cur.fetchall()}
     if "is_occupied" not in cols:
         cur.execute("ALTER TABLE players ADD COLUMN is_occupied INTEGER NOT NULL DEFAULT 0")
+    if "backstory" not in cols:
+        cur.execute("ALTER TABLE players ADD COLUMN backstory TEXT NOT NULL DEFAULT ''")
 
     cur.execute("PRAGMA table_info(game_session)")
     gs_cols = {row[1] for row in cur.fetchall()}
@@ -156,15 +159,16 @@ def upsert_player(player: PlayerModel) -> int:
     cur = conn.cursor()
     cur.execute(
         """
-        INSERT INTO players (name, class_archetype, hp_current, hp_max, stats, inventory, status_effects)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO players (name, class_archetype, hp_current, hp_max, stats, inventory, status_effects, backstory)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(rowid) DO UPDATE SET
             class_archetype  = excluded.class_archetype,
             hp_current       = excluded.hp_current,
             hp_max           = excluded.hp_max,
             stats            = excluded.stats,
             inventory        = excluded.inventory,
-            status_effects   = excluded.status_effects
+            status_effects   = excluded.status_effects,
+            backstory        = excluded.backstory
         """,
         (
             player.name,
@@ -174,6 +178,7 @@ def upsert_player(player: PlayerModel) -> int:
             json.dumps(player.stats, ensure_ascii=False),
             json.dumps(player.inventory, ensure_ascii=False),
             json.dumps(player.status_effects, ensure_ascii=False),
+            player.backstory,
         ),
     )
     conn.commit()
@@ -250,7 +255,7 @@ def clear_game_data() -> None:
         DELETE FROM world_entities;
         DELETE FROM players;
         UPDATE game_session SET
-            game_status = 'exploration',
+            game_status = 'lobby',
             turn_order = '[]',
             current_turn_index = 0,
             timer_ends_at = '',

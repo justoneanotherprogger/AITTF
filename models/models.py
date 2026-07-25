@@ -9,6 +9,7 @@ class PlayerModel(BaseModel):
     stats: dict[str, int]
     inventory: list[str]
     status_effects: list[str]
+    backstory: str = ""
 
 
 class WorldEntityModel(BaseModel):
@@ -18,7 +19,7 @@ class WorldEntityModel(BaseModel):
 
 
 class SessionModel(BaseModel):
-    game_status: str  # exploration, combat
+    game_status: str  # lobby, backstory_gathering, exploration, combat
     turn_order: list
     current_turn_index: int
     timer_ends_at: str = ""

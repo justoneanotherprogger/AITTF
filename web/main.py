@@ -1,4 +1,5 @@
 import json
+import html
 import asyncio
 from dotenv import load_dotenv
 from pathlib import Path
@@ -19,22 +20,36 @@ from models.models import PlayerModel, WorldEntityModel
 from llm.ai_generator import generate_initial_world
 from models.models import ChatMessageModel
 from llm.turn_processor import process_player_action
+from llm.context_builder import build_player_descriptions
 
 app = FastAPI()
 templates = Jinja2Templates(directory=Path(__file__).parent / "templates")
 
-_active_ws: list[WebSocket] = []
+class ConnectionManager:
+    def __init__(self):
+        self._connections: list[WebSocket] = []
+
+    def connect(self, websocket: WebSocket) -> None:
+        self._connections.append(websocket)
+
+    def disconnect(self, websocket: WebSocket) -> None:
+        if websocket in self._connections:
+            self._connections.remove(websocket)
+
+    async def broadcast_html(self, html_content: str) -> None:
+        dead: list[WebSocket] = []
+        for ws in self._connections:
+            try:
+                await ws.send_text(html_content)
+            except WebSocketDisconnect:
+                dead.append(ws)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            self._connections.remove(ws)
 
 
-async def broadcast_message(html_content: str) -> None:
-    dead: list[WebSocket] = []
-    for ws in _active_ws:
-        try:
-            await ws.send_text(html_content)
-        except Exception:
-            dead.append(ws)
-    for ws in dead:
-        _active_ws.remove(ws)
+manager = ConnectionManager()
 
 
 _BTN_CLS = 'px-4 py-2 rounded-lg text-sm font-medium transition'
@@ -100,6 +115,7 @@ _INDEX_HTML = """<!DOCTYPE html>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+  <script src="https://unpkg.com/htmx.org@2.0.4/dist/ext/ws.js"></script>
   <script src="https://cdn.tailwindcss.com"></script>
   <style>
     .htmx-indicator { opacity: 0; transition: opacity .2s; }
@@ -108,11 +124,13 @@ _INDEX_HTML = """<!DOCTYPE html>
   </style>
   <title>AI Tabletop Framework</title>
 </head>
-<body class="bg-gray-900 text-gray-100 h-screen flex flex-col">
+<body class="bg-gray-900 text-gray-100 h-screen flex flex-col"
+      hx-ext="ws" ws-connect="/ws/chat">
   <header class="bg-gray-800 border-b border-gray-700 px-6 py-3 flex items-center justify-between">
     <div class="flex items-center gap-4">
       <h1 class="text-xl font-bold tracking-wide">AI Tabletop Framework</h1>
       <span id="current-player" class="text-sm text-emerald-300">{PLAYER_NAME}</span>
+      <div id="current-player-id" data-id="{CURRENT_PLAYER_ID}" class="hidden"></div>
     </div>
     <a href="/logout" class="text-xs text-gray-400 hover:text-gray-200 underline">Сменить персонажа</a>
     <a href="/admin" class="text-xs text-gray-500 hover:text-gray-300 underline ml-3">Admin</a>
@@ -126,15 +144,13 @@ _INDEX_HTML = """<!DOCTYPE html>
     <!-- Sidebar -->
     <aside id="sidebar" class="w-72 bg-gray-800 border-r border-gray-700 p-4 overflow-y-auto flex-shrink-0">
       <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-3">Персонажи</h2>
-      <div id="players-panel" hx-get="/players_panel" hx-trigger="load, every 5s" hx-swap="innerHTML">
-        <div class="text-gray-500 text-sm">Загрузка...</div>
-      </div>
+      <div id="players-panel">{PLAYERS_PANEL}</div>
     </aside>
 
     <!-- Main -->
     <main class="flex-1 flex flex-col">
       <div id="chat-messages" class="flex-1 overflow-y-auto p-4 space-y-3 relative"
-           hx-get="/chat_fragment" hx-trigger="load, every 3s" hx-swap="innerHTML">
+           hx-get="/chat_fragment" hx-trigger="load" hx-swap="innerHTML">
         <div class="text-gray-500 text-sm">Загрузка истории...</div>
       </div>
       <button id="scroll-bottom-btn" onclick="document.getElementById('chat-messages').scrollTop = document.getElementById('chat-messages').scrollHeight"
@@ -142,7 +158,6 @@ _INDEX_HTML = """<!DOCTYPE html>
         ↓
       </button>
 
-      <div id="timer-poll" hx-get="/timer" hx-trigger="every 1s" hx-swap="none scroll:none" class="hidden"></div>
       <div id="timer-bar"></div>
 
       <div id="input-area">{INPUT_AREA}</div>
@@ -200,7 +215,23 @@ _INDEX_HTML = """<!DOCTYPE html>
       });
 
       // new content arrived — force scroll unless user scrolled up
+      function alignMessages() {
+        var myIdEl = document.getElementById('current-player-id');
+        if (!myIdEl) return;
+        var myId = myIdEl.getAttribute('data-id');
+        document.querySelectorAll('#chat-messages > div[data-sender-id]').forEach(function(el) {
+          if (el.getAttribute('data-sender-id') === myId) {
+            el.classList.add('justify-end');
+            el.classList.remove('justify-start');
+          } else {
+            el.classList.remove('justify-end');
+            el.classList.add('justify-start');
+          }
+        });
+      }
+
       function onNewContent() {
+        alignMessages();
         setTimeout(function() {
           if (userHasScrolledUp) {
             setPulse();
@@ -210,9 +241,6 @@ _INDEX_HTML = """<!DOCTYPE html>
         }, 50);
       }
 
-      // WebSocket for live broadcast
-      var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-      var ws = new WebSocket(proto + '//' + location.host + '/ws/chat');
       function setInputLock(locked) {
         var inp = document.getElementById('message-input');
         if (!inp) return;
@@ -220,26 +248,16 @@ _INDEX_HTML = """<!DOCTYPE html>
         inp.classList.toggle('opacity-50', locked);
       }
 
-      ws.onmessage = function(evt) {
-        var wrapper = document.createElement('div');
-        wrapper.innerHTML = evt.data;
-        wrapper.querySelectorAll('[hx-swap-oob]').forEach(function(el) {
-          if (el.id === '__lock-input') { setInputLock(true); return; }
-          if (el.id === '__unlock-input') { setInputLock(false); return; }
-          var target = document.getElementById(el.id);
-          if (!target) return;
-          var swap = el.getAttribute('hx-swap-oob');
-          if (swap === 'afterbegin') {
-            target.insertAdjacentHTML('afterbegin', el.innerHTML);
-          } else if (swap === 'beforeend') {
-            target.insertAdjacentHTML('beforeend', el.innerHTML);
-          } else {
-            target.outerHTML = el.outerHTML;
-          }
-        });
-        htmx.process(document.body);
-        onNewContent();
-      };
+      document.body.addEventListener('htmx:oobBeforeSwap', function(evt) {
+        if (evt.detail.shouldSwap && evt.detail.elt.id === '__lock-input') {
+          setInputLock(true);
+          evt.preventDefault();
+        }
+        if (evt.detail.shouldSwap && evt.detail.elt.id === '__unlock-input') {
+          setInputLock(false);
+          evt.preventDefault();
+        }
+      });
     })();
     // Clear input after any HTMX request from the two buttons
     document.body.addEventListener('htmx:afterRequest', function(evt) {
@@ -260,13 +278,14 @@ _INDEX_HTML = """<!DOCTYPE html>
 </html>"""
 
 
-def _render_message(sender: str, text: str, is_action: bool = False) -> str:
+def _render_message(sender: str, text: str, is_action: bool = False, oob_target: str = "", sender_id: str = "") -> str:
     is_gm = sender == "GM"
-    align = "text-right" if not is_gm else "text-left"
+    align = "flex justify-start"
     bg = "bg-amber-700/40 border-amber-600/30" if is_action else ("bg-emerald-700/30 border-emerald-600/20" if is_gm else "bg-gray-700/50 border-gray-600/30")
     label = "GM" if is_gm else (f"{sender} совершает действие" if is_action else sender)
+    oob_attr = f' hx-swap-oob="{oob_target}"' if oob_target else ""
     return (
-        f'<div class="{align}">'
+        f'<div class="{align}" data-sender="{sender}" data-sender-id="{sender_id}"{oob_attr}>'
         f'<div class="inline-block max-w-[80%] {bg} border rounded-xl px-4 py-2 text-sm">'
         f'<span class="text-xs font-semibold text-gray-400 block mb-0.5">{label}</span>'
         f'{text}'
@@ -300,19 +319,20 @@ def _render_player_card(row) -> str:
 @app.on_event("startup")
 def startup():
     init_db()
+    asyncio.create_task(_timer_loop())
 
 
 @app.websocket("/ws/chat")
 async def ws_chat(websocket: WebSocket):
     await websocket.accept()
-    _active_ws.append(websocket)
+    manager.connect(websocket)
     try:
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
-        _active_ws.remove(websocket)
+        manager.disconnect(websocket)
     except Exception:
-        _active_ws.remove(websocket)
+        manager.disconnect(websocket)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -323,51 +343,60 @@ async def index(request: Request):
     conn.close()
     game_active = sess and sess["game_status"] == "active"
 
-    if not players:
-        return templates.TemplateResponse(request, "lobby.html", {"players": [], "max_slots": 4, "game_active": False})
+    if sess and sess["game_status"] == "backstory_gathering":
+        return RedirectResponse(url="/backstories")
 
     pid = request.cookies.get("player_id")
-    if not pid:
-        return templates.TemplateResponse(request, "lobby.html", {"players": players, "max_slots": 4, "game_active": game_active})
-    try:
-        player_id = int(pid)
-    except (ValueError, TypeError):
-        return templates.TemplateResponse(request, "lobby.html", {"players": players, "max_slots": 4, "game_active": game_active})
+    current_player_id = int(pid) if pid else None
 
-    conn = get_connection()
-    row = conn.execute("SELECT name FROM players WHERE id=?", (player_id,)).fetchone()
-    conn.close()
+    if current_player_id:
+        my_player = next((dict(p) for p in players if p["id"] == current_player_id), None)
+        if my_player is None:
+            resp = templates.TemplateResponse(request, "lobby.html", {
+                "players": players, "max_slots": 4, "game_active": game_active,
+                "current_player_id": None
+            })
+            resp.delete_cookie("player_id")
+            return resp
+    else:
+        my_player = None
 
-    if not row:
-        resp = templates.TemplateResponse(request, "lobby.html", {"players": players, "max_slots": 4, "game_active": game_active})
-        resp.delete_cookie("player_id")
-        return resp
+    if sess and sess["game_status"] == "exploration" and current_player_id and my_player:
+        panel_html = await _render_players_panel_str()
+        return _INDEX_HTML.replace("{PLAYER_NAME}", my_player["name"]).replace("{CURRENT_PLAYER_ID}", str(current_player_id)).replace("{INPUT_AREA}", _build_input_area_html(locked=False)).replace("{PLAYERS_PANEL}", panel_html)
 
-    return _INDEX_HTML.replace("{PLAYER_NAME}", row["name"]).replace("{INPUT_AREA}", _build_input_area_html(locked=False))
+    return templates.TemplateResponse(request, "lobby.html", {
+        "players": players, "max_slots": 4, "game_active": game_active,
+        "current_player_id": current_player_id
+    })
 
 
 @app.get("/chat_fragment", response_class=HTMLResponse)
 async def chat_fragment():
     conn = get_connection()
     rows = conn.execute(
-        "SELECT sender, message_text, is_action, action_type FROM chat_history ORDER BY id ASC LIMIT 100"
+        "SELECT sender, player_id, message_text, is_action, action_type FROM chat_history ORDER BY id ASC LIMIT 100"
     ).fetchall()
     conn.close()
     html = "".join(
-        _render_message(r["sender"], r["message_text"], bool(r["is_action"]))
+        _render_message(r["sender"], r["message_text"], bool(r["is_action"]), sender_id=str(r["player_id"] or ""))
         for r in rows
     )
     return html or '<div class="text-gray-500 text-sm italic">История пуста. Напишите что-нибудь!</div>'
 
 
-@app.get("/players_panel", response_class=HTMLResponse)
-async def players_panel():
+async def _render_players_panel_str() -> str:
     conn = get_connection()
     rows = conn.execute("SELECT * FROM players").fetchall()
     conn.close()
     if not rows:
         return '<div class="text-gray-500 text-sm">Нет персонажей</div>'
     return "".join(_render_player_card(r) for r in rows)
+
+
+@app.get("/players_panel", response_class=HTMLResponse)
+async def players_panel():
+    return await _render_players_panel_str()
 
 
 @app.get("/choice", response_class=HTMLResponse)
@@ -433,44 +462,138 @@ async def logout(request: Request):
     return resp
 
 
-def _render_slots():
+@app.get("/backstories", response_class=HTMLResponse)
+async def backstories_page(request: Request):
+    sess = get_session()
+    status_from_db = sess.game_status if sess else "None"
+    print(f"[/backstories] Статус из БД: {status_from_db}")
+    if not sess or sess.game_status != "backstory_gathering":
+        print(f"[/backstories] Статус '{status_from_db}' != 'backstory_gathering' — редирект на /")
+        return RedirectResponse(url="/")
+    conn = get_connection()
+    players = conn.execute("SELECT * FROM players").fetchall()
+    conn.close()
+    print(f"[/backstories] Игроков найдено: {len(players)}")
+
+    pid = request.cookies.get("player_id")
+    current_player = next((dict(p) for p in players if p["id"] == int(pid)), None) if pid else None
+
+    return templates.TemplateResponse(request, "backstories.html", {
+        "players": players, "current_player": current_player
+    })
+
+
+def _render_slots(current_player_id: int | None = None):
     conn = get_connection()
     players = conn.execute("SELECT * FROM players").fetchall()
     sess = conn.execute("SELECT game_status FROM game_session WHERE session_id = 1").fetchone()
     conn.close()
     game_active = sess and sess["game_status"] == "active"
     tmpl = templates.env.get_template("slots.html")
-    return tmpl.render(players=players, max_slots=4, game_active=game_active)
+    return tmpl.render(players=players, max_slots=4, game_active=game_active, current_player_id=current_player_id)
 
 
 @app.get("/lobby/slots", response_class=HTMLResponse)
-async def lobby_slots():
-    return _render_slots()
+async def lobby_slots(request: Request):
+    pid = request.cookies.get("player_id")
+    return _render_slots(current_player_id=int(pid) if pid else None)
 
 
 @app.post("/lobby/add_player", response_class=HTMLResponse)
-async def lobby_add_player(name: str = Form(...)):
+async def lobby_add_player(request: Request, name: str = Form(...)):
     conn = get_connection()
-    conn.execute("INSERT INTO players (name) VALUES (?)", (name,))
+    cur = conn.cursor()
+    cur.execute("INSERT INTO players (name) VALUES (?)", (name,))
     conn.commit()
+    player_id = cur.lastrowid
     conn.close()
-    return _render_slots()
+    html = _render_slots(current_player_id=player_id)
+    resp = HTMLResponse(content=html)
+    resp.set_cookie(key="player_id", value=str(player_id), httponly=True)
+    resp.headers["HX-Refresh"] = "true"
+    return resp
 
 
 @app.post("/lobby/remove_player", response_class=HTMLResponse)
-async def lobby_remove_player(player_id: int = Form(...)):
+async def lobby_remove_player(request: Request, player_id: int = Form(...)):
     conn = get_connection()
     conn.execute("DELETE FROM players WHERE id = ?", (player_id,))
     conn.commit()
     conn.close()
-    return _render_slots()
+    pid = request.cookies.get("player_id")
+    current = int(pid) if pid else None
+    html = _render_slots(current_player_id=current)
+    resp = HTMLResponse(content=html)
+    if current and current == player_id:
+        resp.delete_cookie("player_id")
+    return resp
 
 
-_DEFAULT_STAT_VALUE = 1
+@app.post("/player/{player_id}/backstory", response_class=HTMLResponse)
+async def player_backstory(player_id: int, backstory: str = Form(default="")):
+    conn = get_connection()
+    conn.execute("UPDATE players SET backstory = ? WHERE id = ?", (backstory, player_id))
+    conn.commit()
+    row = conn.execute("SELECT * FROM players WHERE id = ?", (player_id,)).fetchone()
+    conn.close()
+
+    name = row["name"]
+    esc_name = html.escape(name)
+    esc_backstory = html.escape(row["backstory"] or "")
+
+    card = (
+        f'<div class="bg-gray-800 rounded-lg border border-gray-700 p-4" id="player-card-{player_id}">'
+        f'  <div class="font-medium text-lg mb-2">{esc_name}</div>'
+        f'  <div class="flex gap-2 items-start">'
+        f'    <textarea id="backstory-{player_id}" name="backstory" rows="4" disabled'
+        f'      class="flex-1 bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm resize-y placeholder-gray-500 opacity-60 cursor-not-allowed">{esc_backstory}</textarea>'
+        f'    <button type="button" disabled'
+        f'      class="px-3 py-2 rounded-lg text-sm font-medium transition whitespace-nowrap bg-gray-700 text-gray-500 cursor-not-allowed">'
+        f'      Закрепить'
+        f'    </button>'
+        f'  </div>'
+        f'</div>'
+    )
+    resp = HTMLResponse(content=card)
+    resp.headers["HX-Trigger"] = "backstory-updated"
+    return resp
 
 
-@app.post("/lobby/start", response_class=HTMLResponse)
-async def lobby_start():
+@app.get("/lobby/backstory_status", response_class=HTMLResponse)
+async def backstory_status():
+    conn = get_connection()
+    players = conn.execute("SELECT * FROM players").fetchall()
+    conn.close()
+    for p in players:
+        val = p["backstory"] if "backstory" in p.keys() else "N/A"
+        print(f"[/backstory_status]  player id={p['id']} name={p['name']}  backstory='{val}' (длина={len(val)})")
+
+    all_filled = all(p["backstory"] for p in players) if players else False
+
+    btn_cls = "w-full bg-amber-600 hover:bg-amber-500 text-white px-8 py-3 rounded-lg text-lg font-medium transition"
+    if not all_filled:
+        btn_cls += " opacity-50 cursor-not-allowed"
+    disabled = " disabled" if not all_filled else ""
+
+    parts = [
+        '<button id="gen-btn" type="button"'
+        f' hx-post="/generate_world"'
+        f' hx-indicator="#gen-spinner"'
+        f' hx-disabled-elt="this"'
+        f' onclick="document.getElementById(\'generate-status\').classList.add(\'loading\')"'
+        f' class="{btn_cls}"{disabled}>'
+        f'Сгенерировать мир'
+        f'</button>'
+        f'<span id="gen-spinner" class="htmx-indicator text-amber-400 text-sm text-center block mt-2">✦ Мастер создаёт мир...</span>'
+    ]
+    if not all_filled and players:
+        remaining = sum(1 for p in players if not p["backstory"])
+        parts.append(f'<p class="text-gray-400 text-sm mt-2 text-center">Осталось заполнить предысторий: {remaining}</p>')
+    return "".join(parts)
+
+
+@app.post("/generate_world", response_class=HTMLResponse)
+async def generate_world():
     conn = get_connection()
     players = conn.execute("SELECT * FROM players").fetchall()
     conn.close()
@@ -478,8 +601,12 @@ async def lobby_start():
     if not players:
         return Response(status_code=400, content="Нет игроков")
 
-    player_inputs = [{"name": r["name"], "description": r["name"]} for r in players]
-    descriptions = [p["description"] for p in player_inputs]
+    # all backstories must be filled
+    all_filled = all(p["backstory"] for p in players)
+    if not all_filled:
+        return Response(status_code=400, content="Не все предыстории заполнены")
+
+    descriptions = build_player_descriptions()
 
     phase_zero = await generate_initial_world(descriptions)
 
@@ -503,54 +630,81 @@ async def lobby_start():
 
     # update existing players with generated stats
     conn = get_connection()
-    for inp in player_inputs:
+    for player in players:
         conn.execute(
             "UPDATE players SET hp_current = 10, hp_max = 10, stats = ?, class_archetype = '' WHERE name = ?",
-            (json.dumps({s: _DEFAULT_STAT_VALUE for s in phase_zero.character_stats_templates}, ensure_ascii=False), inp["name"]),
+            (json.dumps({s: _DEFAULT_STAT_VALUE for s in phase_zero.character_stats_templates}, ensure_ascii=False), player["name"]),
         )
     conn.commit()
-    conn.close()
 
     # update game session
-    conn = get_connection()
     conn.execute(
-        "UPDATE game_session SET game_status = 'active', setting_blob = ?, global_lore = ? WHERE session_id = 1",
+        "UPDATE game_session SET game_status = 'exploration', setting_blob = ?, global_lore = ? WHERE session_id = 1",
         (json.dumps({"name": phase_zero.setting_name, "description": phase_zero.setting_description}, ensure_ascii=False),
          phase_zero.global_conflict),
     )
     conn.commit()
     conn.close()
 
-    return Response(headers={"HX-Redirect": "/choice"})
+    # save initial narrative as the first chat message
+    gm_msg = ChatMessageModel(sender="GM", message_text=phase_zero.initial_narrative_text, is_action=False, timestamp="")
+    add_chat_message(gm_msg)
+
+    return Response(headers={"HX-Redirect": "/"})
 
 
-@app.get("/timer", response_class=HTMLResponse)
-async def timer():
-    sess = get_session()
-    if not sess or not sess.timer_ends_at:
-        return ""
+_DEFAULT_STAT_VALUE = 1
 
-    try:
-        remaining = datetime.fromisoformat(sess.timer_ends_at) - datetime.utcnow()
-    except Exception:
-        return ""
 
-    if remaining.total_seconds() <= 0:
-        reset_timer()
-        clear_oob = '<div id="timer-bar" hx-swap-oob="true"></div>'
+@app.post("/lobby/start", response_class=HTMLResponse)
+async def lobby_start():
+    conn = get_connection()
+    players = conn.execute("SELECT * FROM players").fetchall()
+    conn.close()
+
+    if not players:
+        print("[/lobby/start] Нет игроков — возвращаю 400")
+        return Response(status_code=400, content="Нет игроков")
+
+    print(f"[/lobby/start] Ставлю game_status='backstory_gathering', игроков: {len(players)}")
+    conn = get_connection()
+    conn.execute("UPDATE game_session SET game_status = 'backstory_gathering' WHERE session_id = 1")
+    conn.commit()
+    conn.close()
+
+    print("[/lobby/start] Возвращаю HX-Redirect: /backstories")
+    return Response(headers={"HX-Redirect": "/backstories"})
+
+
+async def _timer_loop():
+    while True:
+        await asyncio.sleep(1)
+        sess = get_session()
+        if not sess or not sess.timer_ends_at:
+            continue
         try:
-            await broadcast_message(clear_oob)
+            remaining = datetime.fromisoformat(sess.timer_ends_at) - datetime.utcnow()
         except Exception:
-            pass
-        asyncio.ensure_future(_auto_respond())
-        return clear_oob
-
-    secs = int(remaining.total_seconds())
-    return (
-        f'<div id="timer-bar" hx-swap-oob="true" '
-        f'class="text-center text-sm text-gray-400 py-1 bg-gray-800 border-t border-gray-700">'
-        f'Мастер внимательно слушает и ждет действий группы: осталось {secs} сек.</div>'
-    )
+            continue
+        if remaining.total_seconds() <= 0:
+            reset_timer()
+            clear_oob = '<div id="timer-bar" hx-swap-oob="true"></div>'
+            try:
+                await manager.broadcast_html(clear_oob)
+            except Exception:
+                pass
+            asyncio.ensure_future(_auto_respond())
+        else:
+            secs = int(remaining.total_seconds())
+            timer_html = (
+                f'<div id="timer-bar" hx-swap-oob="true" '
+                f'class="text-center text-sm text-gray-400 py-1 bg-gray-800 border-t border-gray-700">'
+                f'Мастер внимательно слушает и ждет действий группы: осталось {secs} сек.</div>'
+            )
+            try:
+                await manager.broadcast_html(timer_html)
+            except Exception:
+                pass
 
 
 async def _auto_respond():
@@ -561,10 +715,10 @@ async def _auto_respond():
     conn.close()
     if row is None:
         unlocked = _build_input_area_html(locked=False, oob=True)
-        await broadcast_message(unlocked)
+        await manager.broadcast_html(unlocked)
         return
     locked = _build_input_area_html(locked=True, oob=True)
-    await broadcast_message(locked)
+    await manager.broadcast_html(locked)
     try:
         turn = await process_player_action(
             row["player_id"] or 0,
@@ -574,10 +728,24 @@ async def _auto_respond():
     except Exception as e:
         print(f"ERROR IN _auto_respond: {e}")
         unlocked = _build_input_area_html(locked=False, oob=True)
-        await broadcast_message(unlocked)
+        await manager.broadcast_html(unlocked)
         return
-    html = _build_chat_response(turn) + _build_input_area_html(locked=False, oob=True)
-    await broadcast_message(html)
+
+    gm_html = _render_message("GM", turn.narrative_text, oob_target="beforeend:#chat-messages", sender_id="")
+    conn2 = get_connection()
+    player_rows = conn2.execute("SELECT * FROM players").fetchall()
+    sess2 = conn2.execute("SELECT game_status FROM game_session WHERE session_id = 1").fetchone()
+    conn2.close()
+    panel = "".join(_render_player_card(r) for r in player_rows)
+    status = sess2["game_status"] if sess2 else "exploration"
+    status_cls = "bg-red-700 text-red-200" if status == "combat" else "bg-emerald-700 text-emerald-200"
+    html = (
+        gm_html
+        + f'<div id="players-panel" hx-swap-oob="true">{panel}</div>'
+        + f'<div id="game-status" hx-swap-oob="true" class="text-sm px-3 py-1 rounded-full {status_cls}">{status}</div>'
+        + _build_input_area_html(locked=False, oob=True)
+    )
+    await manager.broadcast_html(html)
 
 
 @app.post("/send_message", response_class=HTMLResponse)
@@ -593,18 +761,14 @@ async def send_message(request: Request, text: str = Form(...)):
         extend_timer()
     except Exception as e:
         print(f"ERROR IN ENDPOINT /send_message: {e}")
-        return '<div class="text-red-400 text-sm">Ошибка отправки сообщения</div>'
+        return Response(status_code=500)
 
-    result = _render_message(player_name, text, is_action=False)
+    rendered = _render_message(player_name, text, is_action=False, oob_target="beforeend:#chat-messages", sender_id=str(player_id))
     timer_oob = _build_timer_bar_oob()
     if timer_oob:
-        result += timer_oob
-        try:
-            await broadcast_message(timer_oob)
-        except Exception as e:
-            print(f"ERROR broadcasting timer: {e}")
-
-    return result
+        rendered += timer_oob
+    await manager.broadcast_html(rendered)
+    return '<input id="message-input" type="text" name="text" value="" class="flex-1 bg-gray-700 border border-gray-600 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500" hx-swap-oob="true">'
 
 
 @app.post("/declare_action", response_class=HTMLResponse)
@@ -620,44 +784,14 @@ async def declare_action(request: Request, text: str = Form(...)):
         extend_timer()
     except Exception as e:
         print(f"ERROR IN ENDPOINT /declare_action: {e}")
-        return '<div class="text-red-400 text-sm">Ошибка обработки действия</div>'
+        return Response(status_code=500)
 
-    result = _render_message(player_name, text, is_action=True)
+    rendered = _render_message(player_name, text, is_action=True, oob_target="beforeend:#chat-messages", sender_id=str(player_id))
     timer_oob = _build_timer_bar_oob()
     if timer_oob:
-        result += timer_oob
-        try:
-            await broadcast_message(timer_oob)
-        except Exception as e:
-            print(f"ERROR broadcasting timer: {e}")
-
-    return result
-
-
-def _build_chat_response(turn):
-    conn = get_connection()
-    rows = conn.execute(
-        "SELECT sender, message_text, is_action FROM chat_history ORDER BY id DESC LIMIT 100"
-    ).fetchall()
-    player_rows = conn.execute("SELECT * FROM players").fetchall()
-    conn.close()
-
-    parts = [_render_message(r["sender"], r["message_text"], bool(r["is_action"])) for r in rows]
-    parts.append(_render_message("GM", turn.narrative_text))
-
-    panel = "".join(_render_player_card(r) for r in player_rows)
-
-    messages_html = "".join(parts)
-
-    return (
-        f'<div id="chat-messages" hx-swap-oob="beforeend">{messages_html}</div>'
-        + f'<div id="players-panel" hx-swap-oob="true">{panel}</div>'
-        + f'<div id="game-status" hx-swap-oob="true" class="text-sm px-3 py-1 rounded-full '
-        + ('bg-red-700 text-red-200">combat' if turn.game_state_trigger == "combat_start"
-           else ('bg-emerald-700 text-emerald-200">exploration' if turn.game_state_trigger == "combat_end"
-                 else 'bg-emerald-700 text-emerald-200">exploration'))
-        + "</div>"
-    )
+        rendered += timer_oob
+    await manager.broadcast_html(rendered)
+    return '<input id="message-input" type="text" name="text" value="" class="flex-1 bg-gray-700 border border-gray-600 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500" hx-swap-oob="true">'
 
 
 @app.get("/admin", response_class=HTMLResponse)
@@ -803,7 +937,7 @@ async def _broadcast_panel_and_status():
         f'<div id="game-status" hx-swap-oob="true" class="text-sm px-3 py-1 rounded-full {status_class}">{status}</div>'
     )
     try:
-        await broadcast_message(html)
+        await manager.broadcast_html(html)
     except Exception as e:
         print(f"ERROR broadcasting admin update: {e}")
 

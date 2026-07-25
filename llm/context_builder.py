@@ -13,6 +13,7 @@ _SYSTEM_MANIFEST = """Ты — Гейм-Мастер (Game Master) в насто
 - Не нарушай базовые правила мироустройства, установленные в Фазе 0.
 - Броски кубиков уже сделаны бэкендом. Не меняй их результаты — опиши их нарративно.
 - Пиши на языке игроков.
+- У каждого игрока есть предыстория (поле "Предыстория" в блоке персонажа). Ты обязан органично вплетать эти предыстории в повествование: создавать отсылки к прошлому персонажей, вовлекать их личные цели и мотивации в глобальный сюжет, давать персонажам моменты, связанные с их прошлым.
 
 Твой ответ должен быть строго в формате JSON и содержать исключительно следующие ключи:
 - narrative_text (строка с описанием происходящего)
@@ -77,12 +78,14 @@ def _get_players_state() -> str:
         stats = json.loads(row["stats"])
         inv = json.loads(row["inventory"])
         effects = json.loads(row["status_effects"])
+        backstory = row["backstory"] if "backstory" in row.keys() and row["backstory"] else "Не указана"
         stats_str = " | ".join(f"{k} {v}" for k, v in stats.items())
         inv_str = ", ".join(inv) if inv else "пусто"
         effects_str = ", ".join(effects) if effects else "нет"
         lines.append(
             f"[{row['name']}]  HP {row['hp_current']}/{row['hp_max']}  |  "
-            f"{stats_str}  |  Инвентарь: {inv_str}  |  Эффекты: {effects_str}"
+            f"{stats_str}  |  Предыстория: {backstory}  |  "
+            f"Инвентарь: {inv_str}  |  Эффекты: {effects_str}"
         )
 
     return "\n".join(lines)
@@ -131,6 +134,16 @@ def _get_recent_history(limit: int = 15) -> str:
             lines.append(f"Персонаж {row['sender']} говорит вслух: {row['message_text']}")
 
     return "\n".join(lines)
+
+
+def build_player_descriptions() -> list[str]:
+    conn = get_connection()
+    rows = conn.execute("SELECT * FROM players").fetchall()
+    conn.close()
+    return [
+        f"Имя: {r['name']}, Предыстория: {r['backstory']}"
+        for r in rows
+    ]
 
 
 def build_stateless_prompt(active_player_id: int, current_action: str) -> dict:

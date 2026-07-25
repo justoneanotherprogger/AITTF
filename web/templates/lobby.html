@@ -18,15 +18,19 @@
     <h1 class="text-3xl font-bold text-center mb-2">AI Tabletop Framework</h1>
     <p class="text-gray-400 text-center mb-8">Добавьте персонажей, чтобы начать игру</p>
 
-    <form hx-post="/lobby/add_player" hx-target="#lobby-slots" hx-swap="innerHTML"
-          class="flex gap-3 mb-8">
-      <input type="text" name="name" placeholder="Имя персонажа" required
-             class="flex-1 bg-gray-800 border border-gray-600 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500">
-      <button type="submit"
-              class="bg-emerald-600 hover:bg-emerald-500 text-white px-6 py-2 rounded-lg text-sm font-medium transition">
-        Добавить
-      </button>
-    </form>
+    {% if current_player_id %}
+      <p class="text-gray-400 text-sm text-center mb-6">Вы уже создали персонажа. Ожидайте старта игры</p>
+    {% else %}
+      <form hx-post="/lobby/add_player" hx-target="#lobby-slots" hx-swap="innerHTML"
+            class="flex gap-3 mb-8">
+        <input type="text" name="name" placeholder="Имя персонажа" required
+               class="flex-1 bg-gray-800 border border-gray-600 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500">
+        <button type="submit"
+                class="bg-emerald-600 hover:bg-emerald-500 text-white px-6 py-2 rounded-lg text-sm font-medium transition">
+          Добавить
+        </button>
+      </form>
+    {% endif %}
 
     <div id="lobby-slots" hx-get="/lobby/slots" hx-trigger="every 1s" hx-swap="innerHTML"
          hx-on::before-request="if(event.detail.elt.id==='start-btn')this.removeAttribute('hx-get')">
