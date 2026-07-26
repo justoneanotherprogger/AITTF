@@ -3,7 +3,7 @@ import html
 import asyncio
 from dotenv import load_dotenv
 from pathlib import Path
-from fastapi import FastAPI, Form, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Form, Request, WebSocket, WebSocketDisconnect, Depends, HTTPException
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 import uvicorn
@@ -15,12 +15,14 @@ from datetime import datetime, timedelta
 from db.database import (
     init_db, get_connection, add_chat_message, get_session,
     extend_timer, reset_timer, clear_game_data, add_or_update_entity,
+    get_player_stats_descriptions, get_player_stat_types,
 )
+from core.game_engine import calc_hp_max
 from models.models import PlayerModel, WorldEntityModel
 from llm.ai_generator import generate_initial_world
 from models.models import ChatMessageModel
 from llm.turn_processor import process_player_action
-from llm.context_builder import build_player_descriptions
+from llm.context_builder import build_player_descriptions, get_pending_actions
 
 app = FastAPI()
 templates = Jinja2Templates(directory=Path(__file__).parent / "templates")
@@ -52,6 +54,12 @@ class ConnectionManager:
 
 
 manager = ConnectionManager()
+
+
+async def _require_localhost(request: Request) -> None:
+    host = request.client.host if request.client else ""
+    if host not in ("127.0.0.1", "::1", "localhost"):
+        raise HTTPException(status_code=403, detail="Доступ только с localhost")
 
 
 _BTN_CLS = 'px-4 py-2 rounded-lg text-sm font-medium transition'
@@ -104,8 +112,9 @@ def _build_input_area_html(locked: bool = False, oob: bool = False) -> str:
         f'class="{_ACTION_CLS} {_BTN_CLS}">Заявить действие</button>'
         '</div>'
         '</div>'
-        '<div id="spinner" class="htmx-indicator text-amber-400 text-sm text-center">'
-        '✦ Мастер думает...'
+        '<div class="text-sm text-center h-5 mt-1">'
+        '<span id="timer-text" class="text-amber-300 font-medium"></span>'
+        '<span id="spinner" class="htmx-indicator text-amber-400">✦ Мастер думает...</span>'
         '</div>'
         '</div>'
         '</div>'
@@ -239,8 +248,6 @@ _INDEX_HTML = """<!DOCTYPE html>
         ↓
       </button>
 
-      <div id="timer-bar" class="bg-gray-800 border-t border-gray-700 px-4 py-3 text-center text-sm text-amber-300 font-medium hidden"></div>
-
       <div id="__timer-reset" style="display:none"></div>
       <div id="__timer-stop" style="display:none"></div>
       <div id="__lock-input" style="display:none"></div>
@@ -313,7 +320,7 @@ _INDEX_HTML = """<!DOCTYPE html>
         observer.observe(chat, {childList: true});
       }
 
-      var timerBar = document.getElementById('timer-bar');
+      var timerText = document.getElementById('timer-text');
       var timerRemaining = 0;
       var timerInterval = null;
       var timerPaused = false;
@@ -328,8 +335,7 @@ _INDEX_HTML = """<!DOCTYPE html>
           if (timerRemaining <= 0) {
             clearInterval(timerInterval);
             timerInterval = null;
-            timerBar.classList.add('hidden');
-            timerBar.innerHTML = '';
+            timerText.textContent = '';
             fetch('/timer_expired', {method: 'POST'});
             return;
           }
@@ -341,7 +347,7 @@ _INDEX_HTML = """<!DOCTYPE html>
         timerPaused = false;
         if (timerInterval) clearInterval(timerInterval);
         timerInterval = null;
-        timerBar.classList.add('hidden');
+        timerText.textContent = '';
       }
 
       function pauseTimer(remaining) {
@@ -353,11 +359,10 @@ _INDEX_HTML = """<!DOCTYPE html>
       }
 
       function updateTimerDisplay() {
-        timerBar.classList.remove('hidden');
         if (timerPaused) {
-          timerBar.innerHTML = `⏸ На паузе <button onclick="fetch('/resume_timer',{method:'POST'});startTimer(${timerRemaining})" class="underline hover:text-amber-100 ml-2">▶ продолжить</button>`;
+          timerText.innerHTML = `⏸ На паузе <button onclick="fetch('/resume_timer',{method:'POST'});startTimer(${timerRemaining})" class="ml-2 px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-sm">▶ продолжить</button>`;
         } else {
-          timerBar.innerHTML = `⏳ Мастер внимательно слушает и ждет действий группы: осталось <span class="text-amber-200 font-bold">${timerRemaining}</span> сек. <button onclick="fetch('/pause_timer',{method:'POST'});pauseTimer(${timerRemaining})" class="ml-2 hover:text-amber-100">⏸</button>`;
+          timerText.innerHTML = `⏳ Мастер внимательно слушает и ждет действий группы: осталось <span class="text-amber-200 font-bold">${timerRemaining}</span> сек. <button onclick="fetch('/pause_timer',{method:'POST'});pauseTimer(${timerRemaining})" class="ml-2 px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-sm">⏸ Пауза</button>`;
         }
       }
 
@@ -371,6 +376,7 @@ _INDEX_HTML = """<!DOCTYPE html>
       document.body.addEventListener('htmx:oobBeforeSwap', function(evt) {
         if (evt.detail.shouldSwap && evt.detail.elt.id === '__lock-input') {
           setInputLock(true);
+          timerText.textContent = '';
           evt.preventDefault();
         }
         if (evt.detail.shouldSwap && evt.detail.elt.id === '__unlock-input') {
@@ -417,6 +423,13 @@ _INDEX_HTML = """<!DOCTYPE html>
       }
     });
   </script>
+
+  <div id="player-modal" onclick="if(event.target===this)this.classList.add('hidden')"
+       class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+    <div id="player-modal-content"
+         class="relative bg-gray-800 rounded-xl border border-gray-700 max-w-lg w-full mx-4 max-h-[80vh] overflow-y-auto p-6 shadow-2xl">
+    </div>
+  </div>
 </body>
 </html>"""
 
@@ -437,6 +450,73 @@ def _render_message(sender: str, text: str, is_action: bool = False, oob_target:
     return inner
 
 
+def _render_player_detail_modal(row) -> str:
+    stats_values = json.loads(row["stats"])
+    inv = json.loads(row["inventory"])
+    effects = json.loads(row["status_effects"])
+    stats_desc = get_player_stats_descriptions(row["name"])
+    stat_types = get_player_stat_types(row["name"])
+
+    hp_pct = round(row["hp_current"] / row["hp_max"] * 100) if row["hp_max"] > 0 else 0
+    hp_color = "bg-red-500" if hp_pct < 30 else ("bg-amber-500" if hp_pct < 60 else "bg-emerald-500")
+
+    type_icons = {"offensive": "⚔️", "defensive": "🛡️", "other": "🔧"}
+
+    stats_rows = ""
+    for stat_name, stat_value in stats_values.items():
+        desc = stats_desc.get(stat_name, "")
+        st = stat_types.get(stat_name, "other")
+        icon = type_icons.get(st, "🔧")
+        s_name = html.escape(stat_name)
+        s_val = html.escape(str(stat_value))
+        s_desc = html.escape(desc) if desc else '<span class="text-gray-500 italic">—</span>'
+        stats_rows += (
+            f'<div class="flex justify-between items-start py-1.5 border-b border-gray-700/50 last:border-0">'
+            f'<div class="flex-1">'
+            f'<span class="text-sm font-medium text-gray-200">{icon} {s_name}</span>'
+            f'<span class="text-xs text-gray-400 ml-2">({s_val})</span>'
+            f'<div class="text-xs text-gray-500 mt-0.5">{s_desc}</div>'
+            f'</div>'
+            f'</div>'
+        )
+
+    inv_html = ", ".join(html.escape(i) for i in inv) if inv else '<span class="text-gray-500 italic">пусто</span>'
+    effects_html = ", ".join(html.escape(e) for e in effects) if effects else '<span class="text-gray-500 italic">нет</span>'
+    name = html.escape(row["name"])
+    cls = html.escape(row["class_archetype"]) if row["class_archetype"] else "—"
+    has_cls_desc = "class_description" in row.keys() and row["class_description"]
+    cls_desc = html.escape(row["class_description"]) if has_cls_desc else ""
+
+    cls_desc_block = f'<p class="text-xs text-gray-500 italic mb-3">{cls_desc}</p>' if cls_desc else '<div class="mb-3"></div>'
+    return (
+        f'<button onclick="document.getElementById(\'player-modal\').classList.add(\'hidden\')"'
+        f' class="absolute top-3 right-3 text-gray-400 hover:text-white text-2xl leading-none cursor-pointer">&times;</button>'
+        f'<h2 class="text-lg font-bold mb-1">{name}</h2>'
+        f'<p class="text-xs text-gray-400 mb-1">{cls}</p>'
+        f'{cls_desc_block}'
+        f'<div class="mb-4">'
+        f'<div class="h-2 bg-gray-600 rounded-full overflow-hidden">'
+        f'<div class="h-full {hp_color} rounded-full" style="width:{hp_pct}%"></div></div>'
+        f'<span class="text-xs text-gray-400">{row["hp_current"]}/{row["hp_max"]} HP</span></div>'
+        f'<h3 class="text-sm font-semibold text-gray-300 mb-2">Характеристики</h3>'
+        f'<div class="mb-4">{stats_rows}</div>'
+        f'<h3 class="text-sm font-semibold text-gray-300 mb-1">Инвентарь</h3>'
+        f'<p class="text-xs text-gray-400 mb-3">{inv_html}</p>'
+        f'<h3 class="text-sm font-semibold text-gray-300 mb-1">Эффекты</h3>'
+        f'<p class="text-xs text-gray-400">{effects_html}</p>'
+    )
+
+
+@app.get("/player/{player_id}/detail", response_class=HTMLResponse)
+async def player_detail(player_id: int):
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM players WHERE id = ?", (player_id,)).fetchone()
+    conn.close()
+    if not row:
+        return '<p class="text-gray-400">Персонаж не найден</p>'
+    return _render_player_detail_modal(row)
+
+
 def _render_player_card(row) -> str:
     stats = json.loads(row["stats"])
     inv = json.loads(row["inventory"])
@@ -447,6 +527,8 @@ def _render_player_card(row) -> str:
     inv_str = ", ".join(inv) if inv else "пусто"
 
     return (
+        f'<div class="cursor-pointer hover:border-emerald-500 transition"'
+        f' onclick="htmx.ajax(\'GET\',\'/player/{row["id"]}/detail\',{{target:\'#player-modal-content\',swap:\'innerHTML\'}});document.getElementById(\'player-modal\').classList.remove(\'hidden\')">'
         f'<div class="bg-gray-750 border border-gray-600 rounded-lg p-3 mb-2">'
         f'<div class="font-semibold text-sm">{row["name"]}</div>'
         f'<div class="text-xs text-gray-400 mt-1">{row["class_archetype"] or "—"}</div>'
@@ -456,7 +538,7 @@ def _render_player_card(row) -> str:
         f'<div class="text-xs text-gray-400 mt-1">{stats_str}</div>'
         f'<div class="text-xs text-gray-500 mt-1">🎒 {inv_str}</div>'
         + (f'<div class="text-xs text-red-400 mt-1">⚠ {", ".join(effects)}</div>' if effects else "")
-        + "</div>"
+        + "</div></div>"
     )
 
 
@@ -930,9 +1012,13 @@ async def generate_world():
         entity_type="rule", name="global_conflict",
         data={"description": phase_zero.global_conflict},
     ))
+    stats_for_db = {
+        p: {s: sd.model_dump() for s, sd in pstats.items()}
+        for p, pstats in phase_zero.character_stats_templates.items()
+    }
     add_or_update_entity(WorldEntityModel(
         entity_type="rule", name="stats_system",
-        data={"stats": phase_zero.character_stats_templates},
+        data={"stats": stats_for_db},
     ))
     add_or_update_entity(WorldEntityModel(
         entity_type="rule", name="initial_narrative",
@@ -942,12 +1028,17 @@ async def generate_world():
     # update existing players with generated stats and archetypes
     conn = get_connection()
     for player in players:
-        archetype = phase_zero.character_classes.get(player["name"], "")
+        cls_def = phase_zero.character_classes.get(player["name"])
+        class_name = cls_def.name if cls_def else ""
+        class_desc = cls_def.description if cls_def else ""
         player_stats = phase_zero.character_stats_templates.get(player["name"], {})
+        def_sum = sum(sd.initial_value for sd in player_stats.values() if sd.stat_type == "defensive")
+        hp_max = calc_hp_max(def_sum)
         conn.execute(
-            "UPDATE players SET hp_current = 10, hp_max = 10, stats = ?, class_archetype = ? WHERE name = ?",
-            (json.dumps({s: _DEFAULT_STAT_VALUE for s in player_stats}, ensure_ascii=False),
-             archetype, player["name"]),
+            "UPDATE players SET hp_current = ?, hp_max = ?, stats = ?, class_archetype = ?, class_description = ? WHERE name = ?",
+            (hp_max, hp_max,
+             json.dumps({s: sd.initial_value for s, sd in player_stats.items()}, ensure_ascii=False),
+             class_name, class_desc, player["name"]),
         )
     conn.commit()
 
@@ -968,9 +1059,6 @@ async def generate_world():
 
     asyncio.create_task(manager.broadcast_html('<span id="__ws-marker-world-generated" style="display:none"></span>'))
     return Response(headers={"HX-Redirect": "/"})
-
-
-_DEFAULT_STAT_VALUE = 1
 
 
 @app.post("/lobby/start", response_class=HTMLResponse)
@@ -995,23 +1083,15 @@ async def lobby_start():
 
 
 async def _auto_respond():
-    conn = get_connection()
-    row = conn.execute(
-        "SELECT player_id, message_text FROM chat_history WHERE sender != 'GM' ORDER BY id DESC LIMIT 1"
-    ).fetchone()
-    conn.close()
-    if row is None:
+    pending = get_pending_actions()
+    if not pending:
         unlocked = _build_input_area_html(locked=False, oob=True)
         await manager.broadcast_html(unlocked)
         return
     locked = _build_input_area_html(locked=True, oob=True)
     await manager.broadcast_html(locked)
     try:
-        turn = await process_player_action(
-            row["player_id"] or 0,
-            row["message_text"],
-            save_message=False,
-        )
+        turn, extra = await process_player_action()
     except Exception as e:
         print(f"ERROR IN _auto_respond: {e}")
         unlocked = _build_input_area_html(locked=False, oob=True)
@@ -1026,8 +1106,10 @@ async def _auto_respond():
     panel = "".join(_render_player_card(r) for r in player_rows)
     status = sess2["game_status"] if sess2 else "exploration"
     status_cls = "bg-red-700 text-red-200" if status == "combat" else "bg-emerald-700 text-emerald-200"
+    extra_html = "".join(extra) if extra else ""
     html = (
         gm_html
+        + extra_html
         + f'<div id="players-panel" hx-swap-oob="true">{panel}</div>'
         + f'<div id="game-status" hx-swap-oob="true" class="text-sm px-3 py-1 rounded-full {status_cls}">{status}</div>'
         + _build_input_area_html(locked=False, oob=True)
@@ -1137,7 +1219,24 @@ async def resume_timer():
 
 
 @app.get("/admin", response_class=HTMLResponse)
-async def admin():
+async def admin(request: Request):
+    host = request.client.host if request.client else ""
+    if host not in ("127.0.0.1", "::1", "localhost"):
+        return """<!DOCTYPE html>
+<html lang="ru">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<script src="https://cdn.tailwindcss.com"></script>
+<title>Доступ запрещён</title>
+</head>
+<body class="bg-gray-900 text-gray-100 min-h-screen flex items-center justify-center">
+  <div class="text-center max-w-md p-6">
+    <h1 class="text-2xl font-bold mb-4">🔒 Доступ запрещён</h1>
+    <p class="text-gray-400">Админ-панель доступна только с локального компьютера сервера (localhost).</p>
+    <a href="/" class="inline-block mt-6 text-sm text-gray-500 hover:text-gray-300 underline">← Назад в игру</a>
+  </div>
+</body>
+</html>"""
+
     conn = get_connection()
     players = conn.execute("SELECT * FROM players").fetchall()
     sess = conn.execute("SELECT * FROM game_session WHERE session_id = 1").fetchone()
@@ -1219,9 +1318,11 @@ async def admin():
 
 @app.post("/admin/update_player", response_class=HTMLResponse)
 async def admin_update_player(
+    request: Request,
     player_id: int = Form(...),
     hp_current: int = Form(...),
     hp_max: int = Form(...),
+    _localhost: None = Depends(_require_localhost),
 ):
     conn = get_connection()
     conn.execute(
@@ -1236,7 +1337,7 @@ async def admin_update_player(
 
 
 @app.post("/admin/toggle_status", response_class=HTMLResponse)
-async def admin_toggle_status():
+async def admin_toggle_status(_: None = Depends(_require_localhost)):
     conn = get_connection()
     row = conn.execute("SELECT game_status FROM game_session WHERE session_id = 1").fetchone()
     old = row["game_status"] if row else "exploration"

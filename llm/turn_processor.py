@@ -9,12 +9,13 @@ from db.database import (
     add_chat_message,
     add_or_update_entity,
     get_connection,
+    get_player_stat_types,
     get_session,
     update_session,
 )
 from models.models import ChatMessageModel, WorldEntityModel, SessionModel
 from llm.context_builder import build_stateless_prompt
-from core.game_engine import start_combat_mode, advance_turn
+from core.game_engine import start_combat_mode, advance_turn, calc_hp_max
 
 
 class TurnResponse(BaseModel):
@@ -122,29 +123,54 @@ async def _call_llm(
             await client.aclose()
 
 
-def _apply_mechanical_action(action: dict[str, Any]) -> None:
+def _apply_mechanical_action(action: dict[str, Any]) -> dict | None:
     action_type = action.get("type")
-    if action_type not in ("damage", "heal"):
-        return
+    if action_type not in ("damage", "heal", "stat_change"):
+        return None
 
     target = action.get("target", "")
     value = action.get("value", 0)
 
     if not target.startswith("player:"):
-        return
+        return None
 
     try:
         player_id = int(target.split(":")[1])
     except (IndexError, ValueError):
-        return
+        return None
 
     conn = get_connection()
-    row = conn.execute(
-        "SELECT hp_current, hp_max FROM players WHERE id = ?", (player_id,)
-    ).fetchone()
+    row = conn.execute("SELECT * FROM players WHERE id = ?", (player_id,)).fetchone()
     if row is None:
         conn.close()
-        return
+        return None
+
+    if action_type == "stat_change":
+        stat_name = action.get("stat", "")
+        if not stat_name:
+            conn.close()
+            return None
+        stats = json.loads(row["stats"])
+        current = stats.get(stat_name, 0)
+        new_val = max(0, current + value)
+        stats[stat_name] = new_val
+        conn.execute("UPDATE players SET stats = ? WHERE id = ?", (json.dumps(stats, ensure_ascii=False), player_id))
+
+        stat_types = get_player_stat_types(row["name"])
+        if stat_types.get(stat_name) == "defensive":
+            def_sum = sum(stats[s] for s, t in stat_types.items() if t == "defensive")
+            new_hp_max = calc_hp_max(def_sum)
+            old_hp_max = row["hp_max"]
+            old_hp_cur = row["hp_current"]
+            new_hp_cur = max(0, old_hp_cur + (new_hp_max - old_hp_max))
+            conn.execute(
+                "UPDATE players SET hp_max = ?, hp_current = ? WHERE id = ?",
+                (new_hp_max, new_hp_cur, player_id),
+            )
+
+        conn.commit()
+        conn.close()
+        return {"stat": stat_name, "player_id": player_id, "delta": value, "new_value": new_val}
 
     hp = row["hp_current"]
     hp_max = row["hp_max"]
@@ -157,6 +183,7 @@ def _apply_mechanical_action(action: dict[str, Any]) -> None:
     conn.execute("UPDATE players SET hp_current = ? WHERE id = ?", (hp, player_id))
     conn.commit()
     conn.close()
+    return None
 
 
 def _apply_new_lore(entities: list[dict[str, Any]]) -> None:
@@ -173,67 +200,35 @@ def _apply_new_lore(entities: list[dict[str, Any]]) -> None:
 
 
 async def process_player_action(
-    player_id: int,
-    action_text: str,
-    *,
-    is_action: bool = True,
-    save_message: bool = True,
     http_client: httpx.AsyncClient | None = None,
-) -> TurnResponse:
-    print(f"[PROCESS] player={player_id} action='{action_text[:60]}...'")
-
-    # 1. Сохраняем действие игрока (если save_message)
-    conn = get_connection()
-    player_row = conn.execute("SELECT name FROM players WHERE id=?", (player_id,)).fetchone()
-    conn.close()
-    player_name = player_row["name"] if player_row else f"Player{player_id}"
-
-    if save_message:
-        label = "action" if is_action else "message"
-        print(f"[PROCESS] 1/8 saving {label} to chat_history...")
-        msg = ChatMessageModel(
-            sender=player_name,
-            message_text=action_text,
-            is_action=is_action,
-            timestamp="",
-        )
-        add_chat_message(msg, player_id=player_id)
-        print(f"[PROCESS] 1/8 done")
-    else:
-        print("[PROCESS] 1/8 skip — save_message=False")
-
-    # 2. Собираем пятислойный контекст
-    print("[PROCESS] 2/8 building stateless prompt...")
-    prompt = build_stateless_prompt(
-        active_player_id=player_id,
-        current_action=action_text,
-        player_name=player_name,
-        is_action=is_action,
-    )
+) -> tuple[TurnResponse, list[str]]:
+    # 1. Собираем контекст (все pending-сообщения читаются из БД)
+    print("[PROCESS] 1/6 building stateless prompt...")
+    prompt = build_stateless_prompt()
     messages = prompt["messages"]
-    print(f"[PROCESS] 2/8 done — system:{len(messages[0]['content'])} chars, user:{len(messages[1]['content'])} chars")
+    print(f"[PROCESS] 1/6 done — system:{len(messages[0]['content'])} chars, user:{len(messages[1]['content'])} chars")
 
-    # 3. Отправляем в LLM
-    print("[PROCESS] 3/8 calling LLM API...")
+    # 2. Отправляем в LLM
+    print("[PROCESS] 2/6 calling LLM API...")
     raw = await _call_llm(messages, http_client=http_client)
-    print(f"[PROCESS] 3/8 done — response {len(raw)} chars")
+    print(f"[PROCESS] 2/6 done — response {len(raw)} chars")
 
-    # 4. Парсим ответ
-    print("[PROCESS] 4/8 parsing turn response...")
+    # 3. Парсим ответ
+    print("[PROCESS] 3/6 parsing turn response...")
     print(f"RAW AI RESPONSE: {raw}")
     try:
         data = json.loads(raw)
         turn = TurnResponse(**data)
-        print("[PROCESS] 4/8 done — parsed OK")
+        print("[PROCESS] 3/6 done — parsed OK")
     except Exception as e:
-        print(f"[PROCESS] 4/8 ERROR — {e}")
+        print(f"[PROCESS] 3/6 ERROR — {e}")
         turn = TurnResponse(
             narrative_text=f"Ошибка обработки ответа: {e}. Попробуйте ещё раз.",
             game_state_trigger="none",
         )
 
-    # 5. Записываем narrative_text в чат
-    print("[PROCESS] 5/8 saving GM narrative to chat_history...")
+    # 4. Записываем narrative_text в чат
+    print("[PROCESS] 4/6 saving GM narrative to chat_history...")
     gm_msg = ChatMessageModel(
         sender="GM",
         message_text=turn.narrative_text,
@@ -241,33 +236,50 @@ async def process_player_action(
         timestamp="",
     )
     add_chat_message(gm_msg)
-    print("[PROCESS] 5/8 done")
+    print("[PROCESS] 4/6 done")
 
-    # 6. Сохраняем новые сущности
+    # 5. Сохраняем новые сущности и применяем механические действия
     if turn.new_lore_discovered:
-        print(f"[PROCESS] 6/8 saving {len(turn.new_lore_discovered)} lore entities...")
+        print(f"[PROCESS] 5/6 saving {len(turn.new_lore_discovered)} lore entities...")
         _apply_new_lore(turn.new_lore_discovered)
-        print("[PROCESS] 6/8 done")
+        print("[PROCESS] 5/6 done")
     else:
-        print("[PROCESS] 6/8 skip — no new lore")
+        print("[PROCESS] 5/6 skip — no new lore")
 
-    # 7. Обрабатываем механические действия
+    extra_broadcasts: list[str] = []
     if turn.mechanical_action:
-        print(f"[PROCESS] 7/8 applying mechanical action: {turn.mechanical_action}")
-        _apply_mechanical_action(turn.mechanical_action)
-        print("[PROCESS] 7/8 done")
+        print(f"[PROCESS] 5/6 applying mechanical action: {turn.mechanical_action}")
+        result = _apply_mechanical_action(turn.mechanical_action)
+        if result:
+            pname = "Неизвестно"
+            conn = get_connection()
+            row = conn.execute("SELECT name FROM players WHERE id = ?", (result["player_id"],)).fetchone()
+            if row:
+                pname = row["name"]
+            conn.close()
+            sign = "+" if result["delta"] > 0 else ""
+            notice = f"<strong>⚡ {result['stat']}</strong> персонажа {pname} изменена ({sign}{result['delta']}, теперь {result['new_value']})"
+            add_chat_message(ChatMessageModel(sender="GM", message_text=notice, is_action=False, timestamp=""))
+            extra_broadcasts.append(
+                f'<div hx-swap-oob="beforeend:#chat-messages">'
+                f'<div class="inline-block max-w-[80%] bg-emerald-700/30 border-emerald-600/20 border rounded-xl px-4 py-2 text-sm" data-author-id="system">'
+                f'<span class="text-xs font-semibold text-gray-400 block mb-0.5">GM</span>'
+                f'{notice}'
+                f'</div></div>'
+            )
+        print("[PROCESS] 5/6 done")
     else:
-        print("[PROCESS] 7/8 skip — no mechanical action")
+        print("[PROCESS] 5/6 skip — no mechanical action")
 
-    # 8. Триггерим смену режима боя
+    # 6. Триггерим смену режима боя
     if turn.game_state_trigger == "combat_start":
-        print("[PROCESS] 8/8 combat_start triggered")
+        print("[PROCESS] 6/6 combat_start triggered")
         conn = get_connection()
         rows = conn.execute("SELECT id FROM players").fetchall()
         conn.close()
         start_combat_mode([r["id"] for r in rows])
     elif turn.game_state_trigger == "combat_end":
-        print("[PROCESS] 8/8 combat_end triggered")
+        print("[PROCESS] 6/6 combat_end triggered")
         session = get_session()
         if session:
             updated = SessionModel(
@@ -277,6 +289,6 @@ async def process_player_action(
             )
             update_session(updated)
     else:
-        print("[PROCESS] 8/8 skip — no state trigger")
+        print("[PROCESS] 6/6 skip — no state trigger")
 
-    return turn
+    return turn, extra_broadcasts

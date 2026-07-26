@@ -4,6 +4,12 @@ import re
 from db.database import get_connection, get_session, update_session
 from models.models import SessionModel
 
+HP_BASE = 10
+
+
+def calc_hp_max(def_stats_sum: int) -> int:
+    return HP_BASE + def_stats_sum
+
 
 def roll_dice(modifier: int = 0) -> int:
     return random.randint(1, 20) + modifier

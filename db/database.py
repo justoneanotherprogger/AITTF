@@ -19,6 +19,7 @@ def _row_to_player(row: sqlite3.Row) -> PlayerModel:
     return PlayerModel(
         name=row["name"],
         class_archetype=row["class_archetype"],
+        class_description=row["class_description"] if "class_description" in row.keys() else "",
         hp_current=row["hp_current"],
         hp_max=row["hp_max"],
         stats=json.loads(row["stats"]),
@@ -110,6 +111,8 @@ def init_db() -> None:
         cur.execute("ALTER TABLE players ADD COLUMN is_occupied INTEGER NOT NULL DEFAULT 0")
     if "backstory" not in cols:
         cur.execute("ALTER TABLE players ADD COLUMN backstory TEXT NOT NULL DEFAULT ''")
+    if "class_description" not in cols:
+        cur.execute("ALTER TABLE players ADD COLUMN class_description TEXT NOT NULL DEFAULT ''")
 
     cur.execute("PRAGMA table_info(game_session)")
     gs_cols = {row[1] for row in cur.fetchall()}
@@ -159,20 +162,22 @@ def upsert_player(player: PlayerModel) -> int:
     cur = conn.cursor()
     cur.execute(
         """
-        INSERT INTO players (name, class_archetype, hp_current, hp_max, stats, inventory, status_effects, backstory)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO players (name, class_archetype, class_description, hp_current, hp_max, stats, inventory, status_effects, backstory)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(rowid) DO UPDATE SET
-            class_archetype  = excluded.class_archetype,
-            hp_current       = excluded.hp_current,
-            hp_max           = excluded.hp_max,
-            stats            = excluded.stats,
-            inventory        = excluded.inventory,
-            status_effects   = excluded.status_effects,
-            backstory        = excluded.backstory
+            class_archetype    = excluded.class_archetype,
+            class_description  = excluded.class_description,
+            hp_current         = excluded.hp_current,
+            hp_max             = excluded.hp_max,
+            stats              = excluded.stats,
+            inventory          = excluded.inventory,
+            status_effects     = excluded.status_effects,
+            backstory          = excluded.backstory
         """,
         (
             player.name,
             player.class_archetype,
+            player.class_description,
             player.hp_current,
             player.hp_max,
             json.dumps(player.stats, ensure_ascii=False),
@@ -246,6 +251,54 @@ def add_chat_message(msg: ChatMessageModel, player_id: int | None = None) -> int
     msg_id = cur.lastrowid
     conn.close()
     return msg_id
+
+
+def get_player_stats_descriptions(player_name: str) -> dict[str, str]:
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT data FROM world_entities WHERE entity_type = 'rule' AND name = 'stats_system'"
+    ).fetchone()
+    conn.close()
+    if not row:
+        return {}
+    data = json.loads(row["data"])
+    stats_data = data.get("stats", {})
+    if not isinstance(stats_data, dict):
+        return {}
+    player_stats = stats_data.get(player_name, {})
+    if not isinstance(player_stats, dict):
+        return {}
+    result = {}
+    for sname, sval in player_stats.items():
+        if isinstance(sval, dict):
+            result[sname] = sval.get("description", "")
+        elif isinstance(sval, str):
+            result[sname] = sval
+    return result
+
+
+def get_player_stat_types(player_name: str) -> dict[str, str]:
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT data FROM world_entities WHERE entity_type = 'rule' AND name = 'stats_system'"
+    ).fetchone()
+    conn.close()
+    if not row:
+        return {}
+    data = json.loads(row["data"])
+    stats_data = data.get("stats", {})
+    if not isinstance(stats_data, dict):
+        return {}
+    player_stats = stats_data.get(player_name, {})
+    if not isinstance(player_stats, dict):
+        return {}
+    result = {}
+    for sname, sval in player_stats.items():
+        if isinstance(sval, dict):
+            result[sname] = sval.get("stat_type", "other")
+        else:
+            result[sname] = "other"
+    return result
 
 
 def clear_game_data() -> None:

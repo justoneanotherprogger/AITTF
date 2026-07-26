@@ -1,9 +1,29 @@
+from enum import Enum
+
 from pydantic import BaseModel
+
+
+class StatType(str, Enum):
+    offensive = "offensive"
+    defensive = "defensive"
+    other = "other"
+
+
+class StatDef(BaseModel):
+    description: str
+    initial_value: int
+    stat_type: StatType = StatType.other
+
+
+class ClassDef(BaseModel):
+    name: str
+    description: str
 
 
 class PlayerModel(BaseModel):
     name: str
     class_archetype: str
+    class_description: str = ""
     hp_current: int
     hp_max: int
     stats: dict[str, int]
