@@ -36,8 +36,10 @@ async def main() -> None:
     print(f"  Конфликт:      {result.global_conflict}")
     print()
     print("  Характеристики персонажей:")
-    for stat_name, stat_desc in result.character_stats_templates.items():
-        print(f"    • {stat_name} — {stat_desc}")
+    for player_name, player_stats in result.character_stats_templates.items():
+        print(f"    {player_name}:")
+        for stat_name, stat_desc in player_stats.items():
+            print(f"      • {stat_name} — {stat_desc}")
     print()
     print("  Вступительный текст:")
     print(f"    {result.initial_narrative_text}")

@@ -13,8 +13,8 @@ class PhaseZeroOutput(BaseModel):
     setting_name: str = Field(description="Название созданного мира")
     setting_description: str = Field(description="Описание сеттинга, логично объединяющего концепты всех игроков")
     global_conflict: str = Field(description="Глобальный конфликт — завязка сюжета и общая цель для группы")
-    character_stats_templates: dict[str, str] = Field(
-        description="Словарь из 3 кастомных характеристик, где ключ — название стата, значение — его краткое описание"
+    character_stats_templates: dict[str, dict[str, str]] = Field(
+        description="Словарь, где ключ — имя персонажа, значение — словарь его персональных характеристик {название стата: описание}. У каждого персонажа свои 2–4 стата, подходящие его концепту"
     )
     character_classes: dict[str, str] = Field(
         description="Словарь, где ключ — имя персонажа (из списка игроков), значение — его класс/архетип, уникальный для этого мира"
@@ -26,14 +26,28 @@ class PhaseZeroOutput(BaseModel):
     def _normalize_stats(cls, data: Any) -> Any:
         stats = data.get("character_stats_templates")
         if isinstance(stats, list):
-            normalized: dict[str, str] = {}
+            normalized: dict[str, dict[str, str]] = {}
             for item in stats:
                 if isinstance(item, dict):
-                    name = item.get("name") or item.get("stat_name", "")
-                    desc = item.get("description") or item.get("desc", "")
-                    if name:
-                        normalized[name] = desc
+                    player_name = item.get("player_name") or item.get("name") or item.get("player", "")
+                    per_player_stats = item.get("stats") or item.get("characteristics") or {}
+                    if isinstance(per_player_stats, list):
+                        resolved = {}
+                        for s in per_player_stats:
+                            sn = s.get("name") or s.get("stat_name", "")
+                            sd = s.get("description") or s.get("desc", "")
+                            if sn:
+                                resolved[sn] = sd
+                        per_player_stats = resolved
+                    if player_name and isinstance(per_player_stats, dict):
+                        normalized[player_name] = per_player_stats
             data["character_stats_templates"] = normalized
+        elif isinstance(stats, dict) and stats:
+            first_val = next(iter(stats.values()))
+            if not isinstance(first_val, dict):
+                players = data.get("character_classes", {})
+                if players:
+                    data["character_stats_templates"] = {p: dict(stats) for p in players}
         return data
 
 
@@ -48,7 +62,7 @@ _PROMPT_TEMPLATE = """Ты — Гейм-Мастер, создающий нов�
 1. Придумать название мира (setting_name)
 2. Описать единый сеттинг, в который органично вписываются все персонажи (setting_description)
 3. Придумать глобальный конфликт — завязку сюжета и общую цель, которая объединит группу (global_conflict)
-4. Сгенерировать ровно 3 кастомные характеристики (не Сила/Ловкость/Интеллект, а уникальные для этого мира), которые подходят именно под этот сеттинг. Для каждой характеристики дай краткое описание (character_stats_templates)
+4. Для КАЖДОГО персонажа сгенерировать 2–4 персональные характеристики, отражающие его уникальную природу и концепт. Не навязывай всем один набор: у бесплотного духа могут быть «Эктоплазменная плотность» и «Сила воли», а у морской черепахи — «Прочность панциря» и «Скорость в воде». Если стат объективно подходит нескольким персонажам — он может пересекаться. character_stats_templates: ключ — ИМЯ персонажа (ровно как в списке), значение — словарь его характеристик (название стата: описание).
 5. Для каждого персонажа придумать уникальный класс/архетип, соответствующий его концепту и сеттингу (character_classes: ключ — имя персонажа, значение — краткое название класса/архетипа, 2-4 слова, без описания)
 6. Написать атмосферный вступительный текст (initial_narrative_text), который погружает игроков в мир и даёт им первую сцену
 
@@ -144,7 +158,13 @@ async def generate_initial_world(
         raw_content = response.json()["choices"][0]["message"]["content"]
         data = _extract_json(raw_content)
 
-        return PhaseZeroOutput(**data)
+        try:
+            return PhaseZeroOutput(**data)
+        except Exception as e:
+            import json as _json
+            print(f"[ai_generator] RAW LLM response: {raw_content}")
+            print(f"[ai_generator] Parsed data: {_json.dumps(data, ensure_ascii=False, indent=2)}")
+            raise
 
     finally:
         if close_client:

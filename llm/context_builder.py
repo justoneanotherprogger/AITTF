@@ -2,10 +2,14 @@ import json
 import re
 from db.database import get_connection
 
-_SYSTEM_MANIFEST = """Ты — Гейм-Мастер (Game Master) в настольной ролевой игре.
+_SYSTEM_MANIFEST = """Ты — Рассказчик (Game Master) в настольной ролевой игре.
 Твоя задача — вести захватывающее повествование для группы игроков.
 
 Правила:
+- Ты — рассказчик, а не игрок. Твоя роль — описывать мир, NPC, окружение и последствия действий игроков.
+- Все персонажи, перечисленные в блоке "СОСТОЯНИЕ ПЕРСОНАЖЕЙ", — это персонажи игроков. НИКОГДА не описывай, что они говорят или делают. За них говорят и действуют только их игроки.
+- Если игрок заявляет действие, опиши результат или реакцию мира на это действие, а не само действие и не реплику персонажа.
+- Ты можешь говорить только за NPC, монстров и прочих неигровых персонажей. За персонажей игроков не говоришь никогда.
 - Ты работаешь по принципу "Да, и": принимай любые валидные действия игроков и развивай их.
 - Провалы не блокируют сюжет — они создают новые повороты.
 - Ты генерируешь новые элементы мира (NPC, фракции, локации, события) на ходу.
@@ -61,9 +65,15 @@ def _get_setting_and_conflict() -> str:
             parts.append("[ГЛОБАЛЬНЫЙ КОНФЛИКТ]")
             parts.append(data.get("description", ""))
         elif row["name"] == "stats_system":
-            stats_desc = "\n".join(
-                f"  {k}: {v}" for k, v in data.get("stats", {}).items()
-            )
+            raw = data.get("stats", {})
+            if raw and isinstance(next(iter(raw.values())), dict):
+                lines = []
+                for pname, pstats in raw.items():
+                    s = ", ".join(f"{k} ({v})" for k, v in pstats.items())
+                    lines.append(f"  {pname}: {s}")
+                stats_desc = "\n".join(lines)
+            else:
+                stats_desc = "\n".join(f"  {k}: {v}" for k, v in raw.items())
             parts.append("[СИСТЕМА ХАРАКТЕРИСТИК]\n" + stats_desc)
 
     return "\n\n".join(parts)
@@ -74,7 +84,7 @@ def _get_players_state() -> str:
     rows = conn.execute("SELECT * FROM players").fetchall()
     conn.close()
 
-    lines = []
+    lines = ["Персонажи игроков (за них ты НЕ говоришь):"]
     for row in rows:
         stats = json.loads(row["stats"])
         inv = json.loads(row["inventory"])
@@ -147,7 +157,13 @@ def build_player_descriptions() -> list[str]:
     ]
 
 
-def build_stateless_prompt(active_player_id: int, current_action: str) -> dict:
+def build_stateless_prompt(
+    active_player_id: int,
+    current_action: str,
+    *,
+    player_name: str = "",
+    is_action: bool = True,
+) -> dict:
     layer_1 = _SYSTEM_MANIFEST
 
     layer_2 = _get_setting_and_conflict()
@@ -158,6 +174,9 @@ def build_stateless_prompt(active_player_id: int, current_action: str) -> dict:
     layer_4 = _get_relevant_lore(keywords)
 
     layer_5 = _get_recent_history()
+
+    action_label = "заявляет действие" if is_action else "говорит вслух"
+    action_line = f"Персонаж {player_name} {action_label}: {current_action}"
 
     user_parts = []
     if layer_2:
@@ -172,8 +191,8 @@ def build_stateless_prompt(active_player_id: int, current_action: str) -> dict:
     if layer_5:
         user_parts.append("\n=== ПОСЛЕДНИЕ СОБЫТИЯ ===")
         user_parts.append(layer_5)
-    user_parts.append(f"\n=== ДЕЙСТВИЕ ИГРОКА ===")
-    user_parts.append(current_action)
+    user_parts.append(f"\n=== ТЕКУЩЕЕ ДЕЙСТВИЕ ===")
+    user_parts.append(action_line)
 
     return {
         "messages": [

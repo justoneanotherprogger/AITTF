@@ -43,12 +43,13 @@ def _register_players(
 ) -> list[PlayerModel]:
     players: list[PlayerModel] = []
     for inp in player_inputs:
+        player_stats_map = phase_zero.character_stats_templates.get(inp["name"], {})
         player = PlayerModel(
             name=inp["name"],
             class_archetype="",
             hp_current=_DEFAULT_HP,
             hp_max=_DEFAULT_HP,
-            stats={s: _DEFAULT_STAT_VALUE for s in phase_zero.character_stats_templates},
+            stats={s: _DEFAULT_STAT_VALUE for s in player_stats_map},
             inventory=[],
             status_effects=[],
         )

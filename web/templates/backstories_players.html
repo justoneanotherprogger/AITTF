@@ -1,0 +1,40 @@
+<div class="space-y-4 mb-8" id="backstory-players">
+  {% if current_player %}
+    <div class="bg-gray-800 rounded-lg border border-emerald-700 p-4 ring-1 ring-emerald-500" id="player-card-{{ current_player.id }}">
+      <div class="font-medium text-lg mb-2">{{ current_player.name }} <span class="text-xs text-emerald-400">— ваша предыстория</span></div>
+      <div class="flex gap-2 items-start">
+        <textarea id="backstory-{{ current_player.id }}" name="backstory" rows="4"
+                  {% if current_player.backstory %}disabled{% endif %}
+                  class="flex-1 bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 resize-y placeholder-gray-500 {% if current_player.backstory %}opacity-60 cursor-not-allowed{% endif %}"
+                  placeholder="Опишите прошлое персонажа...">{{ current_player.backstory or '' }}</textarea>
+        <button type="button"
+                hx-post="/player/{{ current_player.id }}/backstory"
+                hx-include="#backstory-{{ current_player.id }}"
+                hx-target="#player-card-{{ current_player.id }}"
+                hx-swap="outerHTML"
+                {% if current_player.backstory %}disabled{% endif %}
+                class="px-3 py-2 rounded-lg text-sm font-medium transition whitespace-nowrap {% if current_player.backstory %}bg-gray-700 text-gray-500 cursor-not-allowed{% else %}bg-emerald-600 hover:bg-emerald-500 text-white{% endif %}">
+          Закрепить
+        </button>
+      </div>
+    </div>
+
+    {% for p in players %}
+      {% if p.id != current_player.id %}
+        <div class="bg-gray-800/60 rounded-lg border {% if p.backstory %}border-gray-600{% else %}border-dashed border-gray-600{% endif %} p-4">
+          <div class="font-medium text-sm">{{ p.name }}</div>
+          {% if p.backstory %}
+            <p class="text-xs text-gray-400 mt-1">✅ Предыстория заполнена</p>
+          {% else %}
+            <p class="text-xs text-gray-400 mt-1">⏳ Ожидание предыстории...</p>
+          {% endif %}
+        </div>
+      {% endif %}
+    {% endfor %}
+  {% else %}
+    <div class="bg-gray-800 rounded-lg border border-dashed border-gray-600 p-8 text-center">
+      <p class="text-gray-400">Ожидание игроков</p>
+      <p class="text-xs text-gray-500 mt-2">Создайте персонажа в лобби, чтобы заполнить предысторию</p>
+    </div>
+  {% endif %}
+</div>

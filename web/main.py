@@ -49,6 +49,8 @@ class ConnectionManager:
             self._connections.remove(ws)
 
 
+
+
 manager = ConnectionManager()
 
 
@@ -61,7 +63,7 @@ def _build_input_area_html(locked: bool = False, oob: bool = False) -> str:
     if oob:
         if locked:
             ctrl = (
-                f'<div id="chat-controls" hx-swap-oob="true">'
+                f'<div id="chat-controls" class="flex gap-2" hx-swap-oob="true">'
                 f'<button type="button" disabled class="{_DISABLED_CLS} {_BTN_CLS}">Сказать</button>'
                 f'<button type="button" disabled class="{_DISABLED_CLS} {_BTN_CLS}">Заявить действие</button>'
                 f'</div>'
@@ -70,7 +72,7 @@ def _build_input_area_html(locked: bool = False, oob: bool = False) -> str:
             )
         else:
             ctrl = (
-                f'<div id="chat-controls" hx-swap-oob="true">'
+                f'<div id="chat-controls" class="flex gap-2" hx-swap-oob="true">'
                 f'<button type="button" hx-post="/send_message" hx-include="#message-input" '
                 f'hx-target="#chat-messages" hx-swap="beforeend" hx-indicator="#spinner" '
                 f'class="{_ENABLED_CLS} {_BTN_CLS}">Сказать</button>'
@@ -91,7 +93,7 @@ def _build_input_area_html(locked: bool = False, oob: bool = False) -> str:
         '<div class="flex gap-2 mb-2">'
         '<input id="message-input" type="text" name="text" placeholder="Сказать что-то или описать действие..." required autocomplete="off" '
         'class="flex-1 bg-gray-700 border border-gray-600 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500">'
-        '<div id="chat-controls">'
+        '<div id="chat-controls" class="flex gap-2">'
         '<button type="button" hx-post="/send_message" hx-include="#message-input" '
         'hx-target="#chat-messages" hx-swap="beforeend" hx-indicator="#spinner" '
         f'class="{_ENABLED_CLS} {_BTN_CLS}">Сказать</button>'
@@ -108,6 +110,82 @@ def _build_input_area_html(locked: bool = False, oob: bool = False) -> str:
         '</div>'
         '</div>'
     )
+
+def _render_entry_block(current_player_id: int | None = None, player_name: str | None = None) -> str:
+    if current_player_id and player_name:
+        escaped = html.escape(player_name)
+        return (
+            f'<div id="entry-block">'
+            f'<span id="entry-has-player" style="display:none"></span>'
+            f'<div class="bg-gray-800 rounded-lg border border-emerald-700 p-4 mb-6">'
+            f'<div class="flex items-center justify-between">'
+            f'<div>'
+            f'<span class="font-medium text-lg">{escaped}</span>'
+            f'<span class="text-xs text-emerald-400 ml-2">— это вы</span>'
+            f'</div>'
+            f'<div class="flex gap-3">'
+            f'<button hx-get="/lobby/rename_form" hx-target="#entry-block" hx-swap="outerHTML"'
+            f' class="text-xs text-gray-400 hover:text-gray-200 underline">Сменить имя</button>'
+            f'<button hx-post="/lobby/leave" hx-target="#entry-block" hx-swap="outerHTML"'
+            f' class="text-xs text-red-400 hover:text-red-300 underline">Выйти</button>'
+            f'</div>'
+            f'</div>'
+            f'</div>'
+            f'</div>'
+        )
+    return (
+        '<div id="entry-block">'
+        '<form hx-post="/lobby/add_player" hx-target="#entry-block" hx-swap="outerHTML"'
+        ' class="flex gap-3 mb-6">'
+        '<input type="text" name="name" placeholder="Имя персонажа" required'
+        ' class="flex-1 bg-gray-800 border border-gray-600 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500">'
+        '<button type="submit"'
+        ' class="bg-emerald-600 hover:bg-emerald-500 text-white px-6 py-2 rounded-lg text-sm font-medium transition">Войти</button>'
+        '</form>'
+        '</div>'
+    )
+
+
+def _render_lobby_locked_block() -> str:
+    return (
+        '<div id="entry-block">'
+        '<span id="locked-flag" style="display:none"></span>'
+        '<div class="bg-gray-800 rounded-lg border border-gray-700 p-6 mb-6 text-center">'
+        '<p class="text-amber-400 font-medium text-lg">🎲 Игра уже началась</p>'
+        '<p class="text-gray-400 text-sm mt-2">Вы не можете присоединиться к текущей партии.</p>'
+        '<p class="text-gray-500 text-xs mt-2">Дождитесь следующей игры или попросите ведущего сбросить партию.</p>'
+        '</div>'
+        '</div>'
+    )
+
+
+def _render_player_count() -> str:
+    conn = get_connection()
+    count = conn.execute("SELECT COUNT(*) FROM players").fetchone()[0]
+    conn.close()
+    return f'<div id="player-count" class="text-sm text-gray-400 text-center mb-4">В лобби: {count}</div>'
+
+
+def _render_lobby_oob(current_player_id: int | None = None) -> str:
+    slots = _render_slots(current_player_id=current_player_id)
+    conn = get_connection()
+    player_count = conn.execute("SELECT COUNT(*) FROM players").fetchone()[0]
+    conn.close()
+    disabled = "disabled" if player_count == 0 else ""
+    count = (
+        f'<div id="player-count" hx-swap-oob="true" class="text-sm text-gray-400 text-center mb-4">'
+        f'В лобби: {player_count}'
+        f'</div>'
+    )
+    start = (
+        f'<div id="start-area" hx-swap-oob="true" class="w-full flex justify-center mb-6">'
+        f'<button id="start-btn" type="button" hx-post="/lobby/start" hx-disabled-elt="this"'
+        f' class="bg-amber-600 hover:bg-amber-500 text-white px-8 py-3 rounded-lg text-lg font-medium transition" {disabled}>'
+        f'Начать игру'
+        f'</button></div>'
+    )
+    return f'<div id="lobby-slots" hx-swap-oob="true">{slots}</div>{count}{start}'
+
 
 _INDEX_HTML = """<!DOCTYPE html>
 <html lang="ru">
@@ -140,9 +218,6 @@ _INDEX_HTML = """<!DOCTYPE html>
     </div>
     <a href="/logout" class="text-xs text-gray-400 hover:text-gray-200 underline">Сменить персонажа</a>
     <a href="/admin" class="text-xs text-gray-500 hover:text-gray-300 underline ml-3">Admin</a>
-    <button type="button" hx-post="/api/game/reset" hx-disabled-elt="this"
-            hx-confirm="Вы уверены, что хотите удалить текущую игру и начать заново?"
-            class="text-xs text-red-400 hover:text-red-300 underline ml-3">Сбросить партию</button>
     <span id="game-status" class="text-sm px-3 py-1 rounded-full bg-emerald-700 text-emerald-200">exploration</span>
   </header>
 
@@ -241,8 +316,10 @@ _INDEX_HTML = """<!DOCTYPE html>
       var timerBar = document.getElementById('timer-bar');
       var timerRemaining = 0;
       var timerInterval = null;
+      var timerPaused = false;
 
       function startTimer(secs) {
+        timerPaused = false;
         timerRemaining = secs;
         updateTimerDisplay();
         if (timerInterval) clearInterval(timerInterval);
@@ -253,7 +330,7 @@ _INDEX_HTML = """<!DOCTYPE html>
             timerInterval = null;
             timerBar.classList.add('hidden');
             timerBar.innerHTML = '';
-            fetch('/skip_turn', {method: 'POST'});
+            fetch('/timer_expired', {method: 'POST'});
             return;
           }
           updateTimerDisplay();
@@ -261,14 +338,27 @@ _INDEX_HTML = """<!DOCTYPE html>
       }
 
       function stopTimer() {
+        timerPaused = false;
         if (timerInterval) clearInterval(timerInterval);
         timerInterval = null;
         timerBar.classList.add('hidden');
       }
 
+      function pauseTimer(remaining) {
+        timerPaused = true;
+        if (remaining !== undefined) timerRemaining = remaining;
+        if (timerInterval) clearInterval(timerInterval);
+        timerInterval = null;
+        updateTimerDisplay();
+      }
+
       function updateTimerDisplay() {
         timerBar.classList.remove('hidden');
-        timerBar.innerHTML = '⏳ Мастер внимательно слушает и ждет действий группы: осталось <span class="text-amber-200 font-bold">' + timerRemaining + '</span> сек.';
+        if (timerPaused) {
+          timerBar.innerHTML = `⏸ На паузе <button onclick="fetch('/resume_timer',{method:'POST'});startTimer(${timerRemaining})" class="underline hover:text-amber-100 ml-2">▶ продолжить</button>`;
+        } else {
+          timerBar.innerHTML = `⏳ Мастер внимательно слушает и ждет действий группы: осталось <span class="text-amber-200 font-bold">${timerRemaining}</span> сек. <button onclick="fetch('/pause_timer',{method:'POST'});pauseTimer(${timerRemaining})" class="ml-2 hover:text-amber-100">⏸</button>`;
+        }
       }
 
       function setInputLock(locked) {
@@ -288,30 +378,42 @@ _INDEX_HTML = """<!DOCTYPE html>
           evt.preventDefault();
         }
         if (evt.detail.shouldSwap && evt.detail.elt.id === '__timer-reset') {
-          startTimer(15);
+          var remaining = parseInt(evt.detail.elt.getAttribute('data-remaining')) || 15;
+          startTimer(remaining);
           evt.preventDefault();
         }
         if (evt.detail.shouldSwap && evt.detail.elt.id === '__timer-stop') {
           stopTimer();
           evt.preventDefault();
         }
+        if (evt.detail.shouldSwap && evt.detail.elt.id === '__timer-pause') {
+          var rem = parseInt(evt.detail.elt.getAttribute('data-remaining')) || 0;
+          pauseTimer(rem);
+          evt.preventDefault();
+        }
       });
+      document.body.addEventListener('htmx:afterRequest', function(evt) {
+        var path = evt.detail.pathInfo.requestPath;
+        if (path === '/send_message' || path === '/declare_action') {
+          startTimer(15);
+          var inp = document.getElementById('message-input');
+          if (inp) inp.value = '';
+          var ch = document.getElementById('chat-messages');
+          if (ch) { ch.scrollTop = ch.scrollHeight; }
+          var btn = document.getElementById('scroll-bottom-btn');
+          if (btn) {
+            btn.classList.remove('bg-red-500', 'animate-pulse', 'flex');
+            btn.classList.add('bg-emerald-600', 'hidden');
+          }
+        }
+      });
+      window.startTimer = startTimer;
+      window.pauseTimer = pauseTimer;
+      window.stopTimer = stopTimer;
     })();
-    document.body.addEventListener('htmx:afterRequest', function(evt) {
-      if (evt.detail.pathInfo.requestPath === '/send_message' ||
-          evt.detail.pathInfo.requestPath === '/declare_action') {
-        startTimer(15);
-      }
-      var input = document.getElementById('message-input');
-      if (input && (evt.detail.pathInfo.requestPath === '/send_message' ||
-                    evt.detail.pathInfo.requestPath === '/declare_action')) {
-        input.value = '';
-        // always scroll to bottom when user sends a message
-        var chat = document.getElementById('chat-messages');
-        chat.scrollTop = chat.scrollHeight;
-        var btn = document.getElementById('scroll-bottom-btn');
-        btn.classList.remove('bg-red-500', 'animate-pulse', 'flex');
-        btn.classList.add('bg-emerald-600', 'hidden');
+    document.body.addEventListener('htmx:wsAfterMessage', function(evt) {
+      if (evt.detail.message.indexOf('__ws-marker-game-reset') !== -1) {
+        window.location.href = '/';
       }
     });
   </script>
@@ -382,11 +484,22 @@ async def index(request: Request):
     players = conn.execute("SELECT * FROM players").fetchall()
     sess = conn.execute("SELECT game_status FROM game_session WHERE session_id = 1").fetchone()
     conn.close()
-    game_active = sess and sess["game_status"] == "active"
 
-    if sess and sess["game_status"] == "backstory_gathering":
-        return RedirectResponse(url="/backstories")
+    # locked for non-players during any active game stage
+    if sess and sess["game_status"] in ("backstory_gathering", "exploration", "combat"):
+        pid = request.cookies.get("player_id")
+        current_player = next((dict(p) for p in players if p["id"] == int(pid)), None) if pid else None
+        if current_player:
+            if sess["game_status"] == "backstory_gathering":
+                return RedirectResponse(url="/backstories")
+            panel_html = await _render_players_panel_str()
+            return _INDEX_HTML.replace("{PLAYER_NAME}", current_player["name"]).replace("{CURRENT_PLAYER_ID}", str(current_player["id"])).replace("{INPUT_AREA}", _build_input_area_html(locked=False)).replace("{PLAYERS_PANEL}", panel_html)
+        return templates.TemplateResponse(request, "lobby.html", {
+            "players": players, "current_player_id": None,
+            "entry_block": _render_lobby_locked_block(),
+        })
 
+    # lobby — normal flow
     pid = request.cookies.get("player_id")
     current_player_id = int(pid) if pid else None
 
@@ -394,21 +507,18 @@ async def index(request: Request):
         my_player = next((dict(p) for p in players if p["id"] == current_player_id), None)
         if my_player is None:
             resp = templates.TemplateResponse(request, "lobby.html", {
-                "players": players, "max_slots": 4, "game_active": game_active,
-                "current_player_id": None
+                "players": players, "current_player_id": None,
+                "entry_block": _render_entry_block(None),
             })
             resp.delete_cookie("player_id")
             return resp
     else:
         my_player = None
 
-    if sess and sess["game_status"] == "exploration" and current_player_id and my_player:
-        panel_html = await _render_players_panel_str()
-        return _INDEX_HTML.replace("{PLAYER_NAME}", my_player["name"]).replace("{CURRENT_PLAYER_ID}", str(current_player_id)).replace("{INPUT_AREA}", _build_input_area_html(locked=False)).replace("{PLAYERS_PANEL}", panel_html)
-
+    entry_block = _render_entry_block(current_player_id, my_player["name"] if my_player else None)
     return templates.TemplateResponse(request, "lobby.html", {
-        "players": players, "max_slots": 4, "game_active": game_active,
-        "current_player_id": current_player_id
+        "players": players, "current_player_id": current_player_id,
+        "entry_block": entry_block,
     })
 
 
@@ -463,19 +573,24 @@ async def choice():
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+  <script src="https://unpkg.com/htmx.org@2.0.4/dist/ext/ws.js"></script>
   <script src="https://cdn.tailwindcss.com"></script>
   <title>Выбор персонажа — AI Tabletop Framework</title>
 </head>
-<body class="bg-gray-900 text-gray-100 h-screen flex items-center justify-center">
+<body class="bg-gray-900 text-gray-100 h-screen flex items-center justify-center"
+      hx-ext="ws" ws-connect="/ws/chat">
   <div class="w-full max-w-md p-6">
     <h1 class="text-2xl font-bold mb-6 text-center">Выберите персонажа</h1>
     {cards if cards else '<p class="text-gray-400 text-center">Нет доступных персонажей</p>'}
-    <div class="mt-6 text-center">
-      <button type="button" hx-post="/api/game/reset" hx-disabled-elt="this"
-              hx-confirm="Вы уверены, что хотите удалить текущую игру и начать заново?"
-              class="text-xs text-red-400 hover:text-red-300 underline">Сбросить партию</button>
-    </div>
   </div>
+  <script>
+    document.body.addEventListener('htmx:wsAfterMessage', function(evt) {{
+      if (evt.detail.message.indexOf('__ws-marker-game-reset') !== -1) {{
+        window.location.href = '/';
+      }}
+    }});
+  </script>
+</body>
 </html>"""
 
 
@@ -498,7 +613,12 @@ async def logout(request: Request):
         conn.execute("UPDATE players SET is_occupied = 0 WHERE id = ?", (int(pid),))
         conn.commit()
         conn.close()
-    resp = RedirectResponse(url="/")
+
+    sess = get_session()
+    game_in_progress = sess and sess.game_status in ("backstory_gathering", "exploration", "combat")
+    target = "/choice" if game_in_progress else "/"
+
+    resp = RedirectResponse(url=target)
     resp.delete_cookie("player_id")
     return resp
 
@@ -519,29 +639,146 @@ async def backstories_page(request: Request):
     pid = request.cookies.get("player_id")
     current_player = next((dict(p) for p in players if p["id"] == int(pid)), None) if pid else None
 
+    if not current_player:
+        return RedirectResponse(url="/")
+
     return templates.TemplateResponse(request, "backstories.html", {
         "players": players, "current_player": current_player
     })
 
 
 async def _broadcast_lobby_refresh():
-    await manager.broadcast_html('<div id="__refresh-lobby-slots" hx-swap-oob="true" style="display:none"></div>')
+    await asyncio.sleep(0.05)
+    await manager.broadcast_html('<span id="__ws-marker-refresh-lobby" style="display:none"></span>')
+
+
+async def _broadcast_backstory_refresh():
+    await manager.broadcast_html('<span id="__ws-marker-backstory-updated" style="display:none"></span>')
+
+
+async def _broadcast_game_started():
+    await manager.broadcast_html('<span id="__ws-marker-game-started" style="display:none"></span>')
+
+
+async def _broadcast_game_reset():
+    await manager.broadcast_html('<span id="__ws-marker-game-reset" style="display:none"></span>')
+
+
+async def _broadcast_generating_world():
+    await manager.broadcast_html('<span id="__ws-marker-generating-world" style="display:none"></span>')
 
 
 def _render_slots(current_player_id: int | None = None):
     conn = get_connection()
     players = conn.execute("SELECT * FROM players").fetchall()
-    sess = conn.execute("SELECT game_status FROM game_session WHERE session_id = 1").fetchone()
     conn.close()
-    game_active = sess and sess["game_status"] == "active"
     tmpl = templates.env.get_template("slots.html")
-    return tmpl.render(players=players, max_slots=4, game_active=game_active, current_player_id=current_player_id)
+    return tmpl.render(players=players, current_player_id=current_player_id)
+
+
+@app.get("/lobby/entry_block", response_class=HTMLResponse)
+async def lobby_entry_block(request: Request):
+    pid = request.cookies.get("player_id")
+    if pid:
+        conn = get_connection()
+        row = conn.execute("SELECT * FROM players WHERE id = ?", (int(pid),)).fetchone()
+        conn.close()
+        if row:
+            return _render_entry_block(int(pid), row["name"])
+    return _render_entry_block(None)
+
+
+@app.get("/lobby/lobby_meta", response_class=HTMLResponse)
+async def lobby_meta():
+    count = _render_player_count()
+    conn = get_connection()
+    player_count = conn.execute("SELECT COUNT(*) FROM players").fetchone()[0]
+    conn.close()
+    disabled = "disabled" if player_count == 0 else ""
+    start = (
+        f'<div id="start-area" class="w-full flex justify-center mb-6">'
+        f'<button id="start-btn" type="button" hx-post="/lobby/start" hx-disabled-elt="this"'
+        f' class="bg-amber-600 hover:bg-amber-500 text-white px-8 py-3 rounded-lg text-lg font-medium transition" {disabled}>'
+        f'Начать игру'
+        f'</button></div>'
+    )
+    return f'<div id="lobby-meta">{count}{start}</div>'
+
+
+@app.get("/lobby/rename_form", response_class=HTMLResponse)
+async def lobby_rename_form(request: Request):
+    pid = request.cookies.get("player_id")
+    if not pid:
+        return _render_entry_block(None)
+    conn = get_connection()
+    row = conn.execute("SELECT * FROM players WHERE id = ?", (int(pid),)).fetchone()
+    conn.close()
+    if not row:
+        return _render_entry_block(None)
+    escaped = html.escape(row["name"])
+    return (
+        f'<div id="entry-block">'
+        f'<form hx-post="/lobby/rename_player" hx-target="#entry-block" hx-swap="outerHTML"'
+        f' class="flex gap-3 mb-6">'
+        f'<input type="text" name="name" value="{escaped}" required'
+        f' class="flex-1 bg-gray-800 border border-gray-600 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500">'
+        f'<button type="submit"'
+        f' class="bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition">Сохранить</button>'
+        f'<button type="button" hx-get="/lobby/entry_block" hx-target="#entry-block" hx-swap="outerHTML"'
+        f' class="text-gray-400 hover:text-gray-200 underline text-sm">Отмена</button>'
+        f'</form>'
+        f'</div>'
+    )
+
+
+@app.post("/lobby/rename_player", response_class=HTMLResponse)
+async def lobby_rename_player(request: Request, name: str = Form(...)):
+    pid = request.cookies.get("player_id")
+    if not pid:
+        return _render_entry_block(None)
+    conn = get_connection()
+    conn.execute("UPDATE players SET name = ? WHERE id = ?", (name, int(pid)))
+    conn.commit()
+    conn.close()
+    entry = _render_entry_block(int(pid), name)
+    oob = _render_lobby_oob(current_player_id=int(pid))
+    resp = HTMLResponse(content=entry + oob)
+    asyncio.create_task(_broadcast_lobby_refresh())
+    return resp
+
+
+@app.post("/lobby/leave", response_class=HTMLResponse)
+async def lobby_leave(request: Request):
+    pid = request.cookies.get("player_id")
+    if pid:
+        conn = get_connection()
+        conn.execute("DELETE FROM players WHERE id = ?", (int(pid),))
+        conn.commit()
+        conn.close()
+    entry = _render_entry_block(None)
+    oob = _render_lobby_oob()
+    resp = HTMLResponse(content=entry + oob)
+    resp.delete_cookie("player_id")
+    asyncio.create_task(_broadcast_lobby_refresh())
+    return resp
 
 
 @app.get("/lobby/slots", response_class=HTMLResponse)
 async def lobby_slots(request: Request):
     pid = request.cookies.get("player_id")
     return _render_slots(current_player_id=int(pid) if pid else None)
+
+
+@app.get("/lobby/backstory_players", response_class=HTMLResponse)
+async def backstory_players(request: Request):
+    conn = get_connection()
+    players = conn.execute("SELECT * FROM players").fetchall()
+    conn.close()
+    pid = request.cookies.get("player_id")
+    current_player = next((dict(p) for p in players if p["id"] == int(pid)), None) if pid else None
+    return templates.TemplateResponse(request, "backstories_players.html", {
+        "players": players, "current_player": current_player
+    })
 
 
 @app.post("/lobby/add_player", response_class=HTMLResponse)
@@ -556,14 +793,15 @@ async def lobby_add_player(request: Request, name: str = Form(...)):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("INSERT INTO players (name) VALUES (?)", (name,))
-    conn.commit()
     player_id = cur.lastrowid
+    cur.execute("UPDATE players SET is_occupied = 1 WHERE id = ?", (player_id,))
+    conn.commit()
     conn.close()
-    slots_html = _render_slots(current_player_id=player_id)
-    form_oob = '<div id="lobby-form-area" hx-swap-oob="true"><p class="text-gray-400 text-sm text-center mb-6">Вы уже создали персонажа. Ожидайте старта игры</p></div>'
-    resp = HTMLResponse(content=slots_html + form_oob)
-    resp.set_cookie(key="player_id", value=str(player_id), httponly=False)
-    asyncio.ensure_future(_broadcast_lobby_refresh())
+    entry = _render_entry_block(player_id, name)
+    oob = _render_lobby_oob(current_player_id=player_id)
+    resp = HTMLResponse(content=entry + oob)
+    resp.set_cookie(key="player_id", value=str(player_id))
+    asyncio.create_task(_broadcast_lobby_refresh())
     return resp
 
 
@@ -575,25 +813,15 @@ async def lobby_remove_player(request: Request, player_id: int = Form(...)):
     conn.close()
     pid = request.cookies.get("player_id")
     current = int(pid) if pid else None
-    slots_html = _render_slots(current_player_id=current)
     if current and current == player_id:
-        form_oob = (
-            '<div id="lobby-form-area" hx-swap-oob="true">'
-            '<form hx-post="/lobby/add_player" hx-target="#lobby-slots" hx-swap="innerHTML"'
-            ' class="flex gap-3 mb-8">'
-            '<input type="text" name="name" placeholder="Имя персонажа" required'
-            ' class="flex-1 bg-gray-800 border border-gray-600 rounded-lg px-4 py-2 text-sm'
-            ' focus:outline-none focus:ring-2 focus:ring-emerald-500">'
-            '<button type="submit"'
-            ' class="bg-emerald-600 hover:bg-emerald-500 text-white px-6 py-2 rounded-lg'
-            ' text-sm font-medium transition">Добавить</button>'
-            '</form></div>'
-        )
-        resp = HTMLResponse(content=slots_html + form_oob)
+        entry = _render_entry_block(None)
+        oob = _render_lobby_oob()
+        resp = HTMLResponse(content=entry + oob)
         resp.delete_cookie("player_id")
     else:
-        resp = HTMLResponse(content=slots_html)
-    asyncio.ensure_future(_broadcast_lobby_refresh())
+        oob = _render_lobby_oob(current_player_id=current)
+        resp = HTMLResponse(content=oob)
+    asyncio.create_task(_broadcast_lobby_refresh())
     return resp
 
 
@@ -624,14 +852,22 @@ async def player_backstory(player_id: int, backstory: str = Form(default="")):
     )
     resp = HTMLResponse(content=card)
     resp.headers["HX-Trigger"] = "backstory-updated"
+    asyncio.create_task(_broadcast_backstory_refresh())
     return resp
 
 
 @app.get("/lobby/backstory_status", response_class=HTMLResponse)
-async def backstory_status():
+async def backstory_status(request: Request):
+    pid = request.cookies.get("player_id")
+    if not pid:
+        return '<p class="text-gray-400 text-sm text-center mt-4">У вас нет персонажа. Генерация мира недоступна.</p>'
     conn = get_connection()
+    player = conn.execute("SELECT id FROM players WHERE id = ?", (int(pid),)).fetchone()
     players = conn.execute("SELECT * FROM players").fetchall()
     conn.close()
+    if not player:
+        return '<p class="text-gray-400 text-sm text-center mt-4">У вас нет персонажа. Генерация мира недоступна.</p>'
+
     for p in players:
         val = p["backstory"] if "backstory" in p.keys() else "N/A"
         print(f"[/backstory_status]  player id={p['id']} name={p['name']}  backstory='{val}' (длина={len(val)})")
@@ -676,7 +912,14 @@ async def generate_world():
 
     descriptions = build_player_descriptions()
 
-    phase_zero = await generate_initial_world(descriptions)
+    asyncio.create_task(_broadcast_generating_world())
+
+    try:
+        phase_zero = await generate_initial_world(descriptions)
+    except Exception as e:
+        print(f"[generate_world] ERROR: {e}")
+        asyncio.create_task(_broadcast_backstory_refresh())
+        return Response(status_code=500, content=f"Ошибка генерации мира: {e}")
 
     # save world entities
     add_or_update_entity(WorldEntityModel(
@@ -700,9 +943,10 @@ async def generate_world():
     conn = get_connection()
     for player in players:
         archetype = phase_zero.character_classes.get(player["name"], "")
+        player_stats = phase_zero.character_stats_templates.get(player["name"], {})
         conn.execute(
             "UPDATE players SET hp_current = 10, hp_max = 10, stats = ?, class_archetype = ? WHERE name = ?",
-            (json.dumps({s: _DEFAULT_STAT_VALUE for s in phase_zero.character_stats_templates}, ensure_ascii=False),
+            (json.dumps({s: _DEFAULT_STAT_VALUE for s in player_stats}, ensure_ascii=False),
              archetype, player["name"]),
         )
     conn.commit()
@@ -722,6 +966,7 @@ async def generate_world():
     add_chat_message(ChatMessageModel(sender="GM", message_text=f"<strong>⚔️ СУТЬ КОНФЛИКТА</strong><br><br>{phase_zero.global_conflict}", is_action=False, timestamp=""))
     add_chat_message(ChatMessageModel(sender="GM", message_text=phase_zero.initial_narrative_text, is_action=False, timestamp=""))
 
+    asyncio.create_task(manager.broadcast_html('<span id="__ws-marker-world-generated" style="display:none"></span>'))
     return Response(headers={"HX-Redirect": "/"})
 
 
@@ -745,6 +990,7 @@ async def lobby_start():
     conn.close()
 
     print("[/lobby/start] Возвращаю HX-Redirect: /backstories")
+    asyncio.create_task(_broadcast_game_started())
     return Response(headers={"HX-Redirect": "/backstories"})
 
 
@@ -834,10 +1080,10 @@ async def declare_action(request: Request, text: str = Form(...)):
     return timer_reset + '<input id="message-input" type="text" name="text" value="" class="flex-1 bg-gray-700 border border-gray-600 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500" hx-swap-oob="true">'
 
 
-@app.post("/skip_turn", response_class=HTMLResponse)
-async def skip_turn():
+@app.post("/timer_expired", response_class=HTMLResponse)
+async def timer_expired():
     sess = get_session()
-    if not sess or not sess.timer_ends_at:
+    if not sess or not sess.timer_ends_at or sess.timer_ends_at.startswith("PAUSED:"):
         return ""
     try:
         remaining = datetime.fromisoformat(sess.timer_ends_at) - datetime.utcnow()
@@ -848,6 +1094,46 @@ async def skip_turn():
     reset_timer()
     asyncio.ensure_future(_auto_respond())
     return ""
+
+
+@app.post("/pause_timer", response_class=HTMLResponse)
+async def pause_timer():
+    conn = get_connection()
+    row = conn.execute("SELECT timer_ends_at FROM game_session WHERE session_id = 1").fetchone()
+    conn.close()
+    if not row or not row["timer_ends_at"] or row["timer_ends_at"].startswith("PAUSED:"):
+        return ""
+    try:
+        ends = datetime.fromisoformat(row["timer_ends_at"])
+        remaining = int((ends - datetime.utcnow()).total_seconds())
+        if remaining < 1:
+            return ""
+    except Exception:
+        return ""
+    conn = get_connection()
+    conn.execute("UPDATE game_session SET timer_ends_at = ? WHERE session_id = 1", (f"PAUSED:{remaining}",))
+    conn.commit()
+    conn.close()
+    pause_html = f'<div id="__timer-pause" hx-swap-oob="true" data-remaining="{remaining}" style="display:none"></div>'
+    await manager.broadcast_html(pause_html)
+    return pause_html
+
+
+@app.post("/resume_timer", response_class=HTMLResponse)
+async def resume_timer():
+    conn = get_connection()
+    row = conn.execute("SELECT timer_ends_at FROM game_session WHERE session_id = 1").fetchone()
+    conn.close()
+    remaining = 15
+    if row and row["timer_ends_at"].startswith("PAUSED:"):
+        try:
+            remaining = int(row["timer_ends_at"].split(":", 1)[1])
+        except (ValueError, IndexError):
+            remaining = 15
+    extend_timer(remaining)
+    timer_reset = f'<div id="__timer-reset" hx-swap-oob="true" data-remaining="{remaining}" style="display:none"></div>'
+    await manager.broadcast_html(timer_reset)
+    return timer_reset
 
 
 @app.get("/admin", response_class=HTMLResponse)
@@ -894,7 +1180,7 @@ async def admin():
 
     <section class="mb-8">
       <h2 class="text-lg font-semibold mb-3">Статус игры</h2>
-      <div id="admin-status-block" class="flex items-center gap-4 bg-gray-800 border border-gray-700 rounded-lg p-4">
+      <div id="admin-status-block" class="flex items-center gap-4 bg-gray-800 border border-gray-700 rounded-lg p-4 flex-wrap">
         <span class="text-sm">Текущий статус:</span>
         <span class="text-sm px-3 py-1 rounded-full
           {'bg-red-700 text-red-200' if status == 'combat' else 'bg-emerald-700 text-emerald-200'}">{status}</span>
@@ -904,6 +1190,9 @@ async def admin():
             Переключить в {next_status}
           </button>
         </form>
+        <button type="button" hx-post="/api/game/reset" hx-disabled-elt="this"
+                hx-confirm="Вы уверены, что хотите удалить текущую игру и начать заново?"
+                class="text-xs text-red-400 hover:text-red-300 underline">Сбросить партию</button>
       </div>
     </section>
 
@@ -995,6 +1284,7 @@ async def _broadcast_panel_and_status():
 @app.post("/api/game/reset", response_class=HTMLResponse)
 async def reset_game():
     clear_game_data()
+    asyncio.create_task(_broadcast_game_reset())
     resp = Response(status_code=200, headers={"HX-Redirect": "/"})
     resp.delete_cookie("player_id")
     return resp

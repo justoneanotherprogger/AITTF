@@ -183,13 +183,14 @@ async def process_player_action(
     print(f"[PROCESS] player={player_id} action='{action_text[:60]}...'")
 
     # 1. Сохраняем действие игрока (если save_message)
+    conn = get_connection()
+    player_row = conn.execute("SELECT name FROM players WHERE id=?", (player_id,)).fetchone()
+    conn.close()
+    player_name = player_row["name"] if player_row else f"Player{player_id}"
+
     if save_message:
         label = "action" if is_action else "message"
         print(f"[PROCESS] 1/8 saving {label} to chat_history...")
-        conn = get_connection()
-        player_row = conn.execute("SELECT name FROM players WHERE id=?", (player_id,)).fetchone()
-        conn.close()
-        player_name = player_row["name"] if player_row else f"Player{player_id}"
         msg = ChatMessageModel(
             sender=player_name,
             message_text=action_text,
@@ -203,7 +204,12 @@ async def process_player_action(
 
     # 2. Собираем пятислойный контекст
     print("[PROCESS] 2/8 building stateless prompt...")
-    prompt = build_stateless_prompt(active_player_id=player_id, current_action=action_text)
+    prompt = build_stateless_prompt(
+        active_player_id=player_id,
+        current_action=action_text,
+        player_name=player_name,
+        is_action=is_action,
+    )
     messages = prompt["messages"]
     print(f"[PROCESS] 2/8 done — system:{len(messages[0]['content'])} chars, user:{len(messages[1]['content'])} chars")
 
