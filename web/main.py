@@ -232,9 +232,11 @@ _INDEX_HTML = """<!DOCTYPE html>
 
   <div class="flex flex-1 overflow-hidden">
     <!-- Sidebar -->
-    <aside id="sidebar" class="w-72 bg-gray-800 border-r border-gray-700 p-4 overflow-y-auto flex-shrink-0">
+    <aside id="sidebar" class="w-72 bg-gray-800 border-r border-gray-700 p-4 flex-shrink-0 flex flex-col">
       <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-3">Персонажи</h2>
-      <div id="players-panel">{PLAYERS_PANEL}</div>
+      <div id="players-panel" class="flex-1 overflow-y-auto min-h-0">{PLAYERS_PANEL}</div>
+      <div class="border-t-2 border-gray-600 my-3"></div>
+      <div id="lore-card">{LORE_CARD}</div>
     </aside>
 
     <!-- Main -->
@@ -430,6 +432,13 @@ _INDEX_HTML = """<!DOCTYPE html>
          class="relative bg-gray-800 rounded-xl border border-gray-700 max-w-lg w-full mx-4 max-h-[80vh] overflow-y-auto p-6 shadow-2xl">
     </div>
   </div>
+
+  <div id="lore-modal" onclick="if(event.target===this)this.classList.add('hidden')"
+       class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+    <div id="lore-modal-content"
+         class="relative bg-gray-800 rounded-xl border border-gray-700 max-w-lg w-full mx-4 max-h-[80vh] overflow-y-auto p-6 shadow-2xl">
+    </div>
+  </div>
 </body>
 </html>"""
 
@@ -542,6 +551,17 @@ def _render_player_card(row) -> str:
     )
 
 
+def _render_lore_card() -> str:
+    return (
+        '<div class="cursor-pointer hover:border-emerald-500 transition"'
+        ' onclick="htmx.ajax(\'GET\',\'/lore/data\',{target:\'#lore-modal-content\',swap:\'innerHTML\'});document.getElementById(\'lore-modal\').classList.remove(\'hidden\')">'
+        '<div class="bg-gray-750 border border-gray-600 rounded-lg p-3">'
+        '<div class="font-semibold text-sm">📖 Лор / Сюжет</div>'
+        '<div class="text-xs text-gray-400 mt-1">Сеттинг и суть конфликта</div>'
+        '</div></div>'
+    )
+
+
 @app.on_event("startup")
 def startup():
     init_db()
@@ -575,7 +595,8 @@ async def index(request: Request):
             if sess["game_status"] == "backstory_gathering":
                 return RedirectResponse(url="/backstories")
             panel_html = await _render_players_panel_str()
-            return _INDEX_HTML.replace("{PLAYER_NAME}", current_player["name"]).replace("{CURRENT_PLAYER_ID}", str(current_player["id"])).replace("{INPUT_AREA}", _build_input_area_html(locked=False)).replace("{PLAYERS_PANEL}", panel_html)
+            lore_card_html = _render_lore_card()
+            return _INDEX_HTML.replace("{PLAYER_NAME}", current_player["name"]).replace("{CURRENT_PLAYER_ID}", str(current_player["id"])).replace("{INPUT_AREA}", _build_input_area_html(locked=False)).replace("{PLAYERS_PANEL}", panel_html).replace("{LORE_CARD}", lore_card_html)
         return templates.TemplateResponse(request, "lobby.html", {
             "players": players, "current_player_id": None,
             "entry_block": _render_lobby_locked_block(),
@@ -630,6 +651,29 @@ async def _render_players_panel_str() -> str:
 @app.get("/players_panel", response_class=HTMLResponse)
 async def players_panel():
     return await _render_players_panel_str()
+
+
+@app.get("/lore/data", response_class=HTMLResponse)
+async def lore_data():
+    conn = get_connection()
+    sess = conn.execute(
+        "SELECT setting_blob, global_lore FROM game_session WHERE session_id = 1"
+    ).fetchone()
+    conn.close()
+    if not sess:
+        return '<p class="text-gray-400">Данные о мире не найдены</p>'
+    blob = json.loads(sess["setting_blob"])
+    name = blob.get("name", "Мир")
+    description = blob.get("description", "")
+    conflict = sess["global_lore"] or ""
+    return (
+        '<button onclick="document.getElementById(\'lore-modal\').classList.add(\'hidden\')"'
+        ' class="absolute top-3 right-3 text-gray-400 hover:text-white text-2xl leading-none cursor-pointer">&times;</button>'
+        f'<h2 class="text-lg font-bold mb-3">📖 {html.escape(name)}</h2>'
+        f'<div class="text-sm text-gray-300 leading-relaxed mb-6">{html.escape(description)}</div>'
+        '<h3 class="text-md font-semibold text-amber-400 mb-2">⚔️ Суть конфликта</h3>'
+        f'<div class="text-sm text-gray-300 leading-relaxed">{html.escape(conflict)}</div>'
+    )
 
 
 @app.get("/choice", response_class=HTMLResponse)
