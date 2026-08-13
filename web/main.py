@@ -1,6 +1,9 @@
 import json
 import html
 import asyncio
+import socket
+import hashlib
+import os
 from dotenv import load_dotenv
 from pathlib import Path
 from fastapi import FastAPI, Form, Request, WebSocket, WebSocketDisconnect, Depends, HTTPException
@@ -9,6 +12,9 @@ from fastapi.templating import Jinja2Templates
 import uvicorn
 
 load_dotenv()
+
+_ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
+_ADMIN_TOKEN = hashlib.sha256(_ADMIN_PASSWORD.encode()).hexdigest() if _ADMIN_PASSWORD else ""
 
 from datetime import datetime, timedelta
 
@@ -56,10 +62,15 @@ class ConnectionManager:
 manager = ConnectionManager()
 
 
-async def _require_localhost(request: Request) -> None:
-    host = request.client.host if request.client else ""
-    if host not in ("127.0.0.1", "::1", "localhost"):
-        raise HTTPException(status_code=403, detail="Доступ только с localhost")
+async def _require_admin(request: Request) -> None:
+    if not _ADMIN_PASSWORD:
+        host = request.client.host if request.client else ""
+        if host not in ("127.0.0.1", "::1", "localhost"):
+            raise HTTPException(status_code=403, detail="Доступ только с localhost")
+        return
+    token = request.cookies.get("admin_token", "")
+    if token != _ADMIN_TOKEN:
+        raise HTTPException(status_code=403, detail="Доступ запрещён")
 
 
 _BTN_CLS = 'px-4 py-2 rounded-lg text-sm font-medium transition'
@@ -362,7 +373,7 @@ _INDEX_HTML = """<!DOCTYPE html>
 
       function updateTimerDisplay() {
         if (timerPaused) {
-          timerText.innerHTML = `⏸ На паузе <button onclick="fetch('/resume_timer',{method:'POST'});startTimer(${timerRemaining})" class="ml-2 px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-sm">▶ продолжить</button>`;
+          timerText.innerHTML = `⏸ На паузе <button onclick="fetch('/resume_timer',{method:'POST'});startTimer(${timerRemaining})" class="ml-2 px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-sm">▶ запустить</button>`;
         } else {
           timerText.innerHTML = `⏳ Мастер внимательно слушает и ждет действий группы: осталось <span class="text-amber-200 font-bold">${timerRemaining}</span> сек. <button onclick="fetch('/pause_timer',{method:'POST'});pauseTimer(${timerRemaining})" class="ml-2 px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-sm">⏸ Пауза</button>`;
         }
@@ -562,9 +573,35 @@ def _render_lore_card() -> str:
     )
 
 
+_local_ip: str = ""
+
+def _render_local_ip_info() -> str:
+    if not _local_ip:
+        return ""
+    full = f"{_local_ip}:8000"
+    blurred = "***.***.***.***:****"
+    return (
+        '<div class="flex justify-center">'
+        '<div class="flex items-center gap-2 text-xs text-gray-500 mb-2">'
+        '<span>🌐 Сеть:</span>'
+        f'<span id="local-ip" data-ip="{full}" data-blurred="{blurred}" class="font-mono cursor-pointer hover:text-gray-300" onclick="var p=this.textContent;navigator.clipboard.writeText(this.dataset.ip).then(()=>{{this.textContent=\'Скопировано!\';setTimeout(()=>this.textContent=p,1000)}}).catch(()=>{{}})">{blurred}</span>'
+        '<button onclick="const s=document.getElementById(\'local-ip\');s.textContent=s.textContent===s.dataset.blurred?s.dataset.ip:s.dataset.blurred"'
+        ' class="text-gray-400 hover:text-gray-200 text-sm leading-none ml-1" type="button">👁</button>'
+        '</div></div>'
+    )
+
 @app.on_event("startup")
 def startup():
+    global _local_ip
     init_db()
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        _local_ip = s.getsockname()[0]
+        s.close()
+        print(f"  🌐 Сервер доступен в сети: http://{_local_ip}:8000")
+    except Exception:
+        pass
 
 
 @app.websocket("/ws/chat")
@@ -597,9 +634,11 @@ async def index(request: Request):
             panel_html = await _render_players_panel_str()
             lore_card_html = _render_lore_card()
             return _INDEX_HTML.replace("{PLAYER_NAME}", current_player["name"]).replace("{CURRENT_PLAYER_ID}", str(current_player["id"])).replace("{INPUT_AREA}", _build_input_area_html(locked=False)).replace("{PLAYERS_PANEL}", panel_html).replace("{LORE_CARD}", lore_card_html)
+        local_ip_info = _render_local_ip_info()
         return templates.TemplateResponse(request, "lobby.html", {
             "players": players, "current_player_id": None,
             "entry_block": _render_lobby_locked_block(),
+            "local_ip_info": local_ip_info,
         })
 
     # lobby — normal flow
@@ -609,9 +648,11 @@ async def index(request: Request):
     if current_player_id:
         my_player = next((dict(p) for p in players if p["id"] == current_player_id), None)
         if my_player is None:
+            local_ip_info = _render_local_ip_info()
             resp = templates.TemplateResponse(request, "lobby.html", {
                 "players": players, "current_player_id": None,
                 "entry_block": _render_entry_block(None),
+                "local_ip_info": local_ip_info,
             })
             resp.delete_cookie("player_id")
             return resp
@@ -619,9 +660,10 @@ async def index(request: Request):
         my_player = None
 
     entry_block = _render_entry_block(current_player_id, my_player["name"] if my_player else None)
+    local_ip_info = _render_local_ip_info()
     return templates.TemplateResponse(request, "lobby.html", {
         "players": players, "current_player_id": current_player_id,
-        "entry_block": entry_block,
+        "entry_block": entry_block, "local_ip_info": local_ip_info,
     })
 
 
@@ -769,7 +811,7 @@ async def backstories_page(request: Request):
         return RedirectResponse(url="/")
 
     return templates.TemplateResponse(request, "backstories.html", {
-        "players": players, "current_player": current_player
+        "players": players, "current_player": current_player,
     })
 
 
@@ -1262,21 +1304,67 @@ async def resume_timer():
     return timer_reset
 
 
-@app.get("/admin", response_class=HTMLResponse)
-async def admin(request: Request):
-    host = request.client.host if request.client else ""
-    if host not in ("127.0.0.1", "::1", "localhost"):
+@app.post("/admin/login", response_class=HTMLResponse)
+async def admin_login(request: Request, password: str = Form(...)):
+    if not _ADMIN_PASSWORD:
+        return RedirectResponse(url="/admin", status_code=303)
+    expected = hashlib.sha256(password.encode()).hexdigest()
+    if expected != _ADMIN_TOKEN:
         return """<!DOCTYPE html>
 <html lang="ru">
 <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<script src="https://unpkg.com/htmx.org@2.0.4"></script>
 <script src="https://cdn.tailwindcss.com"></script>
-<title>Доступ запрещён</title>
+<title>Вход в админ-панель</title>
 </head>
 <body class="bg-gray-900 text-gray-100 min-h-screen flex items-center justify-center">
-  <div class="text-center max-w-md p-6">
-    <h1 class="text-2xl font-bold mb-4">🔒 Доступ запрещён</h1>
-    <p class="text-gray-400">Админ-панель доступна только с локального компьютера сервера (localhost).</p>
-    <a href="/" class="inline-block mt-6 text-sm text-gray-500 hover:text-gray-300 underline">← Назад в игру</a>
+  <div class="max-w-sm w-full p-6">
+    <h1 class="text-2xl font-bold text-center mb-6">🔒 Вход в админ-панель</h1>
+    <p class="text-red-400 text-sm text-center mb-4">Неверный пароль</p>
+    <form hx-post="/admin/login" hx-target="body" hx-swap="outerHTML" class="flex flex-col gap-4">
+      <input type="password" name="password" placeholder="Пароль администратора" required
+             class="bg-gray-800 border border-gray-600 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500">
+      <button type="submit"
+              class="bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition">Войти</button>
+    </form>
+    <a href="/" class="block mt-6 text-center text-sm text-gray-500 hover:text-gray-300 underline">← Назад в игру</a>
+  </div>
+</body>
+</html>"""
+    resp = RedirectResponse(url="/admin", status_code=303)
+    resp.set_cookie(key="admin_token", value=_ADMIN_TOKEN, httponly=True, max_age=86400 * 30)
+    return resp
+
+
+@app.post("/admin/logout", response_class=HTMLResponse)
+async def admin_logout():
+    resp = RedirectResponse(url="/admin", status_code=303)
+    resp.delete_cookie("admin_token")
+    return resp
+
+
+@app.get("/admin", response_class=HTMLResponse)
+async def admin(request: Request):
+    if _ADMIN_PASSWORD:
+        token = request.cookies.get("admin_token", "")
+        if token != _ADMIN_TOKEN:
+            return """<!DOCTYPE html>
+<html lang="ru">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<script src="https://unpkg.com/htmx.org@2.0.4"></script>
+<script src="https://cdn.tailwindcss.com"></script>
+<title>Вход в админ-панель</title>
+</head>
+<body class="bg-gray-900 text-gray-100 min-h-screen flex items-center justify-center">
+  <div class="max-w-sm w-full p-6">
+    <h1 class="text-2xl font-bold text-center mb-6">🔒 Вход в админ-панель</h1>
+    <form hx-post="/admin/login" hx-target="body" hx-swap="outerHTML" class="flex flex-col gap-4">
+      <input type="password" name="password" placeholder="Пароль администратора" required
+             class="bg-gray-800 border border-gray-600 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500">
+      <button type="submit"
+              class="bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2 rounded-lg text-sm font-medium transition">Войти</button>
+    </form>
+    <a href="/" class="block mt-6 text-center text-sm text-gray-500 hover:text-gray-300 underline">← Назад в игру</a>
   </div>
 </body>
 </html>"""
@@ -1308,6 +1396,7 @@ async def admin(request: Request):
         for r in players
     )
 
+    logout_link = f'<span class="text-gray-600">|</span><form hx-post="/admin/logout" hx-target="body" hx-swap="outerHTML"><button type="submit" class="text-sm text-red-400 hover:text-red-300 underline">Выйти</button></form>' if _ADMIN_PASSWORD else ""
     return f"""<!DOCTYPE html>
 <html lang="ru">
 <head>
@@ -1354,7 +1443,10 @@ async def admin(request: Request):
       </table>
     </section>
 
-    <a href="/" class="inline-block mt-6 text-sm text-gray-400 hover:text-gray-200 underline">← Назад в игру</a>
+    <div class="mt-6 flex items-center gap-4">
+      <a href="/" class="text-sm text-gray-400 hover:text-gray-200 underline">← Назад в игру</a>
+      {logout_link}
+    </div>
   </div>
 </body>
 </html>"""
@@ -1366,7 +1458,7 @@ async def admin_update_player(
     player_id: int = Form(...),
     hp_current: int = Form(...),
     hp_max: int = Form(...),
-    _localhost: None = Depends(_require_localhost),
+    _admin: None = Depends(_require_admin),
 ):
     conn = get_connection()
     conn.execute(
@@ -1381,7 +1473,7 @@ async def admin_update_player(
 
 
 @app.post("/admin/toggle_status", response_class=HTMLResponse)
-async def admin_toggle_status(_: None = Depends(_require_localhost)):
+async def admin_toggle_status(_: None = Depends(_require_admin)):
     conn = get_connection()
     row = conn.execute("SELECT game_status FROM game_session WHERE session_id = 1").fetchone()
     old = row["game_status"] if row else "exploration"
