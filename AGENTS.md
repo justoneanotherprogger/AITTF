@@ -22,8 +22,8 @@ AITTF (AI Tabletop Framework) — веб-фреймворк для настол�
 ## Запуск и проверки
 
 ```sh
-poetry install
-poetry run uvicorn web.main:app --host 0.0.0.0 --port 8000
+python -m poetry install
+python -m poetry run uvicorn web.main:app --host 0.0.0.0 --port 8000
 python scripts/check_file_size.py   # рэтчет размеров файлов
 python -m ruff check .              # линтер
 ```

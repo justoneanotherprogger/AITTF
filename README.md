@@ -9,7 +9,7 @@
 2. Скопируйте проект и установите зависимости (из корня репозитория):
 
 ```bash
-poetry install
+python -m poetry install
 ```
 
 3. Создайте `AITTF/.env` (скопируйте из `.env.example`):
@@ -31,7 +31,7 @@ MODEL=deepseek-v4-flash-free
 ## Запуск
 
 ```bash
-poetry run uvicorn web.main:app --host 0.0.0.0 --port 8000
+python -m poetry run uvicorn web.main:app --host 0.0.0.0 --port 8000
 ```
 
 Для доступа с других устройств в локальной сети узнайте IP сервера (`ipconfig` / `ip a`) и откройте `http://<IP>:8000`. Фаерволл должен разрешать порт 8000.
