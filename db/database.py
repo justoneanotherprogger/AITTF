@@ -2,7 +2,7 @@ import json
 import sqlite3
 from pathlib import Path
 
-from models.models import PlayerModel, WorldEntityModel, SessionModel, ChatMessageModel
+from models.models import ChatMessageModel, PlayerModel, SessionModel, WorldEntityModel
 
 DB_PATH = Path(__file__).parent.parent / "game.db"
 
@@ -19,13 +19,13 @@ def _row_to_player(row: sqlite3.Row) -> PlayerModel:
     return PlayerModel(
         name=row["name"],
         class_archetype=row["class_archetype"],
-        class_description=row["class_description"] if "class_description" in row.keys() else "",
+        class_description=row["class_description"] if "class_description" in row else "",
         hp_current=row["hp_current"],
         hp_max=row["hp_max"],
         stats=json.loads(row["stats"]),
         inventory=json.loads(row["inventory"]),
         status_effects=json.loads(row["status_effects"]),
-        backstory=row["backstory"] if "backstory" in row.keys() else "",
+        backstory=row["backstory"] if "backstory" in row else "",
     )
 
 

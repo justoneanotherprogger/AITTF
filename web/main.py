@@ -1,34 +1,40 @@
-import json
-import html
 import asyncio
-import socket
 import hashlib
+import html
+import json
 import os
-from dotenv import load_dotenv
+import socket
+from datetime import datetime, timedelta
 from pathlib import Path
-from fastapi import FastAPI, Form, Request, WebSocket, WebSocketDisconnect, Depends, HTTPException
+
+import uvicorn
+from dotenv import load_dotenv
+from fastapi import Depends, FastAPI, Form, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
-import uvicorn
+
+from core.game_engine import calc_hp_max
+from db.database import (
+    add_chat_message,
+    add_or_update_entity,
+    clear_game_data,
+    extend_timer,
+    get_connection,
+    get_player_stat_types,
+    get_player_stats_descriptions,
+    get_session,
+    init_db,
+    reset_timer,
+)
+from llm.ai_generator import generate_initial_world
+from llm.context_builder import build_player_descriptions, get_pending_actions
+from llm.turn_processor import process_player_action
+from models.models import ChatMessageModel, WorldEntityModel
 
 load_dotenv()
 
 _ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
 _ADMIN_TOKEN = hashlib.sha256(_ADMIN_PASSWORD.encode()).hexdigest() if _ADMIN_PASSWORD else ""
-
-from datetime import datetime, timedelta
-
-from db.database import (
-    init_db, get_connection, add_chat_message, get_session,
-    extend_timer, reset_timer, clear_game_data, add_or_update_entity,
-    get_player_stats_descriptions, get_player_stat_types,
-)
-from core.game_engine import calc_hp_max
-from models.models import PlayerModel, WorldEntityModel
-from llm.ai_generator import generate_initial_world
-from models.models import ChatMessageModel
-from llm.turn_processor import process_player_action
-from llm.context_builder import build_player_descriptions, get_pending_actions
 
 app = FastAPI()
 templates = Jinja2Templates(directory=Path(__file__).parent / "templates")
@@ -504,7 +510,7 @@ def _render_player_detail_modal(row) -> str:
     effects_html = ", ".join(html.escape(e) for e in effects) if effects else '<span class="text-gray-500 italic">нет</span>'
     name = html.escape(row["name"])
     cls = html.escape(row["class_archetype"]) if row["class_archetype"] else "—"
-    has_cls_desc = "class_description" in row.keys() and row["class_description"]
+    has_cls_desc = "class_description" in row and row["class_description"]
     cls_desc = html.escape(row["class_description"]) if has_cls_desc else ""
 
     cls_desc_block = f'<p class="text-xs text-gray-500 italic mb-3">{cls_desc}</p>' if cls_desc else '<div class="mb-3"></div>'
@@ -911,7 +917,7 @@ async def lobby_rename_player(request: Request, name: str = Form(...)):
     entry = _render_entry_block(int(pid), name)
     oob = _render_lobby_oob(current_player_id=int(pid))
     resp = HTMLResponse(content=entry + oob)
-    asyncio.create_task(_broadcast_lobby_refresh())
+    _ = asyncio.create_task(_broadcast_lobby_refresh())  # noqa: RUF006
     return resp
 
 
@@ -927,7 +933,7 @@ async def lobby_leave(request: Request):
     oob = _render_lobby_oob()
     resp = HTMLResponse(content=entry + oob)
     resp.delete_cookie("player_id")
-    asyncio.create_task(_broadcast_lobby_refresh())
+    _ = asyncio.create_task(_broadcast_lobby_refresh())  # noqa: RUF006
     return resp
 
 
@@ -969,7 +975,7 @@ async def lobby_add_player(request: Request, name: str = Form(...)):
     oob = _render_lobby_oob(current_player_id=player_id)
     resp = HTMLResponse(content=entry + oob)
     resp.set_cookie(key="player_id", value=str(player_id))
-    asyncio.create_task(_broadcast_lobby_refresh())
+    _ = asyncio.create_task(_broadcast_lobby_refresh())  # noqa: RUF006
     return resp
 
 
@@ -989,7 +995,7 @@ async def lobby_remove_player(request: Request, player_id: int = Form(...)):
     else:
         oob = _render_lobby_oob(current_player_id=current)
         resp = HTMLResponse(content=oob)
-    asyncio.create_task(_broadcast_lobby_refresh())
+    _ = asyncio.create_task(_broadcast_lobby_refresh())  # noqa: RUF006
     return resp
 
 
@@ -1020,7 +1026,7 @@ async def player_backstory(player_id: int, backstory: str = Form(default="")):
     )
     resp = HTMLResponse(content=card)
     resp.headers["HX-Trigger"] = "backstory-updated"
-    asyncio.create_task(_broadcast_backstory_refresh())
+    _ = asyncio.create_task(_broadcast_backstory_refresh())  # noqa: RUF006
     return resp
 
 
@@ -1037,7 +1043,7 @@ async def backstory_status(request: Request):
         return '<p class="text-gray-400 text-sm text-center mt-4">У вас нет персонажа. Генерация мира недоступна.</p>'
 
     for p in players:
-        val = p["backstory"] if "backstory" in p.keys() else "N/A"
+        val = p["backstory"] if "backstory" in p else "N/A"
         print(f"[/backstory_status]  player id={p['id']} name={p['name']}  backstory='{val}' (длина={len(val)})")
 
     all_filled = all(p["backstory"] for p in players) if players else False
@@ -1080,13 +1086,13 @@ async def generate_world():
 
     descriptions = build_player_descriptions()
 
-    asyncio.create_task(_broadcast_generating_world())
+    _ = asyncio.create_task(_broadcast_generating_world())  # noqa: RUF006
 
     try:
         phase_zero = await generate_initial_world(descriptions)
     except Exception as e:
         print(f"[generate_world] ERROR: {e}")
-        asyncio.create_task(_broadcast_backstory_refresh())
+        _ = asyncio.create_task(_broadcast_backstory_refresh())  # noqa: RUF006
         return Response(status_code=500, content=f"Ошибка генерации мира: {e}")
 
     # save world entities
@@ -1143,7 +1149,7 @@ async def generate_world():
     add_chat_message(ChatMessageModel(sender="GM", message_text=f"<strong>⚔️ СУТЬ КОНФЛИКТА</strong><br><br>{phase_zero.global_conflict}", is_action=False, timestamp=""))
     add_chat_message(ChatMessageModel(sender="GM", message_text=phase_zero.initial_narrative_text, is_action=False, timestamp=""))
 
-    asyncio.create_task(manager.broadcast_html('<span id="__ws-marker-world-generated" style="display:none"></span>'))
+    _ = asyncio.create_task(manager.broadcast_html('<span id="__ws-marker-world-generated" style="display:none"></span>'))  # noqa: RUF006
     return Response(headers={"HX-Redirect": "/"})
 
 
@@ -1164,7 +1170,7 @@ async def lobby_start():
     conn.close()
 
     print("[/lobby/start] Возвращаю HX-Redirect: /backstories")
-    asyncio.create_task(_broadcast_game_started())
+    _ = asyncio.create_task(_broadcast_game_started())  # noqa: RUF006
     return Response(headers={"HX-Redirect": "/backstories"})
 
 
@@ -1260,7 +1266,7 @@ async def timer_expired():
     if remaining.total_seconds() > 1:
         return ""
     reset_timer()
-    asyncio.ensure_future(_auto_respond())
+    _ = asyncio.create_task(_auto_respond())  # noqa: RUF006
     return ""
 
 
@@ -1396,7 +1402,7 @@ async def admin(request: Request):
         for r in players
     )
 
-    logout_link = f'<span class="text-gray-600">|</span><form hx-post="/admin/logout" hx-target="body" hx-swap="outerHTML"><button type="submit" class="text-sm text-red-400 hover:text-red-300 underline">Выйти</button></form>' if _ADMIN_PASSWORD else ""
+    logout_link = '<span class="text-gray-600">|</span><form hx-post="/admin/logout" hx-target="body" hx-swap="outerHTML"><button type="submit" class="text-sm text-red-400 hover:text-red-300 underline">Выйти</button></form>' if _ADMIN_PASSWORD else ""
     return f"""<!DOCTYPE html>
 <html lang="ru">
 <head>
@@ -1521,7 +1527,7 @@ async def _broadcast_panel_and_status():
 @app.post("/api/game/reset", response_class=HTMLResponse)
 async def reset_game():
     clear_game_data()
-    asyncio.create_task(_broadcast_game_reset())
+    _ = asyncio.create_task(_broadcast_game_reset())  # noqa: RUF006
     resp = Response(status_code=200, headers={"HX-Redirect": "/"})
     resp.delete_cookie("player_id")
     return resp
