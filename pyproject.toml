@@ -50,7 +50,7 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "__init__.py" = ["F401"]  # unused imports in __init__ are re-exports
-"web/main.py" = ["RUF006", "I001"]  # fire-and-forget asyncio.create_task; compact multi-import lines
+"web/main.py" = ["RUF006"]  # fire-and-forget asyncio.create_task
 
 [tool.ruff.format]
 quote-style = "double"

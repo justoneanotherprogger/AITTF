@@ -3,6 +3,6 @@
   "extensions": ["py"],
   "exclude_dirs": [".git", ".venv", "venv", "__pycache__", ".letta"],
   "baseline": {
-    "web/main.py": 1537
+    "web/main.py": 1296
   }
 }
