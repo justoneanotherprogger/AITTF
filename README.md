@@ -24,8 +24,8 @@ MODEL=deepseek-v4-flash-free
 | Провайдер | BASE_URL | MODEL |
 |-----------|----------|-------|
 | OpenAI | `https://api.openai.com/v1` | `gpt-4o-mini` |
-| OpenRouter | `https://openrouter.ai/api/v1` | `cognitivecomputations/dolphin3.0-r1-mistral-24b:free` |
 | LM Studio (локально) | `http://localhost:1234/v1` | `*` |
+| Любой совместимый | `<url>` | `<model>` |
 
 ## Запуск
 
