@@ -15,16 +15,9 @@ from fastapi.templating import Jinja2Templates
 
 from core.game_engine import calc_hp_max
 from db.database import (
-    add_chat_message,
-    add_or_update_entity,
-    clear_game_data,
-    extend_timer,
-    get_connection,
-    get_player_stat_types,
-    get_player_stats_descriptions,
-    get_session,
-    init_db,
-    reset_timer,
+    init_db, get_connection, add_chat_message, get_session,
+    extend_timer, reset_timer, clear_game_data, add_or_update_entity,
+    get_player_stats_descriptions, get_player_stat_types,
 )
 from llm.ai_generator import generate_initial_world
 from llm.context_builder import build_player_descriptions, get_pending_actions
@@ -917,7 +910,7 @@ async def lobby_rename_player(request: Request, name: str = Form(...)):
     entry = _render_entry_block(int(pid), name)
     oob = _render_lobby_oob(current_player_id=int(pid))
     resp = HTMLResponse(content=entry + oob)
-    _ = asyncio.create_task(_broadcast_lobby_refresh())  # noqa: RUF006
+    asyncio.create_task(_broadcast_lobby_refresh())
     return resp
 
 
@@ -933,7 +926,7 @@ async def lobby_leave(request: Request):
     oob = _render_lobby_oob()
     resp = HTMLResponse(content=entry + oob)
     resp.delete_cookie("player_id")
-    _ = asyncio.create_task(_broadcast_lobby_refresh())  # noqa: RUF006
+    asyncio.create_task(_broadcast_lobby_refresh())
     return resp
 
 
@@ -975,7 +968,7 @@ async def lobby_add_player(request: Request, name: str = Form(...)):
     oob = _render_lobby_oob(current_player_id=player_id)
     resp = HTMLResponse(content=entry + oob)
     resp.set_cookie(key="player_id", value=str(player_id))
-    _ = asyncio.create_task(_broadcast_lobby_refresh())  # noqa: RUF006
+    asyncio.create_task(_broadcast_lobby_refresh())
     return resp
 
 
@@ -995,7 +988,7 @@ async def lobby_remove_player(request: Request, player_id: int = Form(...)):
     else:
         oob = _render_lobby_oob(current_player_id=current)
         resp = HTMLResponse(content=oob)
-    _ = asyncio.create_task(_broadcast_lobby_refresh())  # noqa: RUF006
+    asyncio.create_task(_broadcast_lobby_refresh())
     return resp
 
 
@@ -1026,7 +1019,7 @@ async def player_backstory(player_id: int, backstory: str = Form(default="")):
     )
     resp = HTMLResponse(content=card)
     resp.headers["HX-Trigger"] = "backstory-updated"
-    _ = asyncio.create_task(_broadcast_backstory_refresh())  # noqa: RUF006
+    asyncio.create_task(_broadcast_backstory_refresh())
     return resp
 
 
@@ -1086,13 +1079,13 @@ async def generate_world():
 
     descriptions = build_player_descriptions()
 
-    _ = asyncio.create_task(_broadcast_generating_world())  # noqa: RUF006
+    asyncio.create_task(_broadcast_generating_world())
 
     try:
         phase_zero = await generate_initial_world(descriptions)
     except Exception as e:
         print(f"[generate_world] ERROR: {e}")
-        _ = asyncio.create_task(_broadcast_backstory_refresh())  # noqa: RUF006
+        asyncio.create_task(_broadcast_backstory_refresh())
         return Response(status_code=500, content=f"Ошибка генерации мира: {e}")
 
     # save world entities
@@ -1149,7 +1142,7 @@ async def generate_world():
     add_chat_message(ChatMessageModel(sender="GM", message_text=f"<strong>⚔️ СУТЬ КОНФЛИКТА</strong><br><br>{phase_zero.global_conflict}", is_action=False, timestamp=""))
     add_chat_message(ChatMessageModel(sender="GM", message_text=phase_zero.initial_narrative_text, is_action=False, timestamp=""))
 
-    _ = asyncio.create_task(manager.broadcast_html('<span id="__ws-marker-world-generated" style="display:none"></span>'))  # noqa: RUF006
+    asyncio.create_task(manager.broadcast_html('<span id="__ws-marker-world-generated" style="display:none"></span>'))
     return Response(headers={"HX-Redirect": "/"})
 
 
@@ -1170,7 +1163,7 @@ async def lobby_start():
     conn.close()
 
     print("[/lobby/start] Возвращаю HX-Redirect: /backstories")
-    _ = asyncio.create_task(_broadcast_game_started())  # noqa: RUF006
+    asyncio.create_task(_broadcast_game_started())
     return Response(headers={"HX-Redirect": "/backstories"})
 
 
@@ -1266,7 +1259,7 @@ async def timer_expired():
     if remaining.total_seconds() > 1:
         return ""
     reset_timer()
-    _ = asyncio.create_task(_auto_respond())  # noqa: RUF006
+    asyncio.create_task(_auto_respond())
     return ""
 
 
@@ -1527,7 +1520,7 @@ async def _broadcast_panel_and_status():
 @app.post("/api/game/reset", response_class=HTMLResponse)
 async def reset_game():
     clear_game_data()
-    _ = asyncio.create_task(_broadcast_game_reset())  # noqa: RUF006
+    asyncio.create_task(_broadcast_game_reset())
     resp = Response(status_code=200, headers={"HX-Redirect": "/"})
     resp.delete_cookie("player_id")
     return resp
