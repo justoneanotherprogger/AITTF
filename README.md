@@ -23,7 +23,6 @@ MODEL=deepseek-v4-flash-free
 Для смены провайдера укажите `BASE_URL` другого OpenAI-совместимого API:
 | Провайдер | BASE_URL | MODEL |
 |-----------|----------|-------|
-| opencode.ai | `https://opencode.ai/zen/v1` | `deepseek-v4-flash-free` |
 | OpenAI | `https://api.openai.com/v1` | `gpt-4o-mini` |
 | OpenRouter | `https://openrouter.ai/api/v1` | `cognitivecomputations/dolphin3.0-r1-mistral-24b:free` |
 | LM Studio (локально) | `http://localhost:1234/v1` | `*` |
