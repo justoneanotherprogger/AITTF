@@ -1,5 +1,6 @@
 import json
 import re
+
 from db.database import get_connection
 
 _SYSTEM_MANIFEST = """Ты — Рассказчик (Game Master) в настольной ролевой игре.
@@ -111,7 +112,7 @@ def _get_players_state() -> str:
         stats = json.loads(row["stats"])
         inv = json.loads(row["inventory"])
         effects = json.loads(row["status_effects"])
-        backstory = row["backstory"] if "backstory" in row.keys() and row["backstory"] else "Не указана"
+        backstory = row["backstory"] if "backstory" in row and row["backstory"] else "Не указана"
         stats_str = " | ".join(f"{k} {v}" for k, v in stats.items())
         inv_str = ", ".join(inv) if inv else "пусто"
         effects_str = ", ".join(effects) if effects else "нет"

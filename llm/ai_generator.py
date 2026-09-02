@@ -6,7 +6,7 @@ import httpx
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field, model_validator
 
-from models.models import StatDef, ClassDef, StatType
+from models.models import ClassDef, StatDef
 
 load_dotenv()
 
@@ -172,7 +172,7 @@ async def generate_initial_world(
 
         try:
             return PhaseZeroOutput(**data)
-        except Exception as e:
+        except Exception:
             import json as _json
             print(f"[ai_generator] RAW LLM response (full): {raw_content}")
             print(f"[ai_generator] Parsed data: {_json.dumps(data, ensure_ascii=False, indent=2)}")

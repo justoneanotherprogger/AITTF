@@ -1,6 +1,6 @@
 import json
 import random
-import re
+
 from db.database import get_connection, get_session, update_session
 from models.models import SessionModel
 

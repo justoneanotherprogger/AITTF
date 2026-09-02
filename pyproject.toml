@@ -17,8 +17,43 @@ python-dotenv = "*"
 jinja2 = "*"
 websockets = "^16.1.1"
 
+[tool.poetry.group.dev.dependencies]
+ruff = "*"
+
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = [
+    "F",     # pyflakes
+    "E",     # pycodestyle errors
+    "W",     # pycodestyle warnings
+    "I",     # isort
+    "UP",    # pyupgrade
+    "B",     # flake8-bugbear
+    "SIM",   # flake8-simplify
+    "RUF",   # ruff-specific
+]
+ignore = [
+    "E501",   # line too long — handled by formatter
+    "B008",   # function call in default argument (FastAPI Depends)
+    "SIM108", # ternary operator — not always readable
+    "RUF001", # ambiguous Unicode in strings — false positive for Russian text
+    "SIM401", # use dict.get() instead of if block — readability choice
+    "RUF019", # unnecessary key check before dict access — readability choice
+]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]  # unused imports in __init__ are re-exports
+"web/main.py" = ["RUF006"]  # fire-and-forget asyncio.create_task
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
 
 

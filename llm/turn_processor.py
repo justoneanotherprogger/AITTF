@@ -5,6 +5,7 @@ from typing import Any
 import httpx
 from pydantic import BaseModel, Field, model_validator
 
+from core.game_engine import calc_hp_max, start_combat_mode
 from db.database import (
     add_chat_message,
     add_or_update_entity,
@@ -13,9 +14,8 @@ from db.database import (
     get_session,
     update_session,
 )
-from models.models import ChatMessageModel, WorldEntityModel, SessionModel
 from llm.context_builder import build_stateless_prompt
-from core.game_engine import start_combat_mode, advance_turn, calc_hp_max
+from models.models import ChatMessageModel, SessionModel, WorldEntityModel
 
 
 class TurnResponse(BaseModel):

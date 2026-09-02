@@ -1,34 +1,40 @@
-import json
-import html
 import asyncio
-import socket
 import hashlib
+import html
+import json
 import os
-from dotenv import load_dotenv
+import socket
+from datetime import datetime, timedelta
 from pathlib import Path
-from fastapi import FastAPI, Form, Request, WebSocket, WebSocketDisconnect, Depends, HTTPException
+
+import uvicorn
+from dotenv import load_dotenv
+from fastapi import Depends, FastAPI, Form, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
-import uvicorn
+
+from core.game_engine import calc_hp_max
+from db.database import (
+    add_chat_message,
+    add_or_update_entity,
+    clear_game_data,
+    extend_timer,
+    get_connection,
+    get_player_stat_types,
+    get_player_stats_descriptions,
+    get_session,
+    init_db,
+    reset_timer,
+)
+from llm.ai_generator import generate_initial_world
+from llm.context_builder import build_player_descriptions, get_pending_actions
+from llm.turn_processor import process_player_action
+from models.models import ChatMessageModel, WorldEntityModel
 
 load_dotenv()
 
 _ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
 _ADMIN_TOKEN = hashlib.sha256(_ADMIN_PASSWORD.encode()).hexdigest() if _ADMIN_PASSWORD else ""
-
-from datetime import datetime, timedelta
-
-from db.database import (
-    init_db, get_connection, add_chat_message, get_session,
-    extend_timer, reset_timer, clear_game_data, add_or_update_entity,
-    get_player_stats_descriptions, get_player_stat_types,
-)
-from core.game_engine import calc_hp_max
-from models.models import PlayerModel, WorldEntityModel
-from llm.ai_generator import generate_initial_world
-from models.models import ChatMessageModel
-from llm.turn_processor import process_player_action
-from llm.context_builder import build_player_descriptions, get_pending_actions
 
 app = FastAPI()
 templates = Jinja2Templates(directory=Path(__file__).parent / "templates")
@@ -207,253 +213,6 @@ def _render_lobby_oob(current_player_id: int | None = None) -> str:
     return f'<div id="lobby-slots" hx-swap-oob="true">{slots}</div>{count}{start}'
 
 
-_INDEX_HTML = """<!DOCTYPE html>
-<html lang="ru">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <script src="https://unpkg.com/htmx.org@2.0.4"></script>
-  <script src="https://unpkg.com/htmx.org@2.0.4/dist/ext/ws.js"></script>
-  <script src="https://cdn.tailwindcss.com"></script>
-    <style>
-      .htmx-indicator { opacity: 0; transition: opacity .2s; }
-      .htmx-request .htmx-indicator { opacity: 1; }
-      .htmx-request.htmx-indicator { opacity: 1; }
-      #chat-messages { display: flex; flex-direction: column; }
-      #chat-messages > [data-author-id]:not([data-author-id="system"]) {
-        align-self: flex-end;
-      }
-      #chat-messages > [data-author-id] {
-        max-width: 80%;
-      }
-    </style>
-  <title>AI Tabletop Framework</title>
-</head>
-<body class="bg-gray-900 text-gray-100 h-screen flex flex-col"
-      hx-ext="ws" ws-connect="/ws/chat">
-  <header class="bg-gray-800 border-b border-gray-700 px-6 py-3 flex items-center justify-between">
-    <div class="flex items-center gap-4">
-      <h1 class="text-xl font-bold tracking-wide">AI Tabletop Framework</h1>
-      <span id="current-player" class="text-sm text-emerald-300">{PLAYER_NAME}</span>
-    </div>
-    <a href="/logout" class="text-xs text-gray-400 hover:text-gray-200 underline">Сменить персонажа</a>
-    <a href="/admin" class="text-xs text-gray-500 hover:text-gray-300 underline ml-3">Admin</a>
-    <span id="game-status" class="text-sm px-3 py-1 rounded-full bg-emerald-700 text-emerald-200">exploration</span>
-  </header>
-
-  <div class="flex flex-1 overflow-hidden">
-    <!-- Sidebar -->
-    <aside id="sidebar" class="w-72 bg-gray-800 border-r border-gray-700 p-4 flex-shrink-0 flex flex-col">
-      <h2 class="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-3">Персонажи</h2>
-      <div id="players-panel" class="flex-1 overflow-y-auto min-h-0">{PLAYERS_PANEL}</div>
-      <div class="border-t-2 border-gray-600 my-3"></div>
-      <div id="lore-card">{LORE_CARD}</div>
-    </aside>
-
-    <!-- Main -->
-    <main class="flex-1 flex flex-col">
-      <div id="chat-messages" class="flex-1 overflow-y-auto p-4 space-y-3 relative"
-           hx-get="/chat_fragment" hx-trigger="load" hx-swap="innerHTML">
-        <div class="text-gray-500 text-sm">Загрузка истории...</div>
-      </div>
-      <button id="scroll-bottom-btn" onclick="document.getElementById('chat-messages').scrollTop = document.getElementById('chat-messages').scrollHeight"
-              class="hidden fixed bottom-24 right-6 z-10 bg-emerald-600 hover:bg-emerald-500 text-white w-10 h-10 rounded-full shadow-lg items-center justify-center transition">
-        ↓
-      </button>
-
-      <div id="__timer-reset" style="display:none"></div>
-      <div id="__timer-stop" style="display:none"></div>
-      <div id="__lock-input" style="display:none"></div>
-      <div id="__unlock-input" style="display:none"></div>
-
-      <div id="input-area">{INPUT_AREA}</div>
-    </main>
-  </div>
-  <script>
-    (function() {
-      var CURRENT_PLAYER_ID = '{CURRENT_PLAYER_ID}';
-      var chat = document.getElementById('chat-messages');
-      var scrollBtn = document.getElementById('scroll-bottom-btn');
-      var userHasScrolledUp = false;
-
-      function scrollToBottom() {
-        chat.scrollTop = chat.scrollHeight;
-        userHasScrolledUp = false;
-        clearPulse();
-      }
-
-      function isNearBottom() {
-        return chat.scrollTop + chat.clientHeight >= chat.scrollHeight - 150;
-      }
-
-      function clearPulse() {
-        scrollBtn.classList.remove('bg-red-500', 'animate-pulse');
-        scrollBtn.classList.add('bg-emerald-600');
-      }
-
-      function setPulse() {
-        if (!scrollBtn.classList.contains('animate-pulse')) {
-          scrollBtn.classList.remove('bg-emerald-600', 'hidden');
-          scrollBtn.classList.add('flex', 'bg-red-500', 'animate-pulse');
-        }
-      }
-
-      chat.addEventListener('scroll', function() {
-        if (isNearBottom()) {
-          userHasScrolledUp = false;
-          scrollBtn.classList.add('hidden');
-          scrollBtn.classList.remove('flex');
-          clearPulse();
-        } else if (!userHasScrolledUp) {
-          userHasScrolledUp = true;
-          scrollBtn.classList.remove('hidden');
-          scrollBtn.classList.add('flex');
-          clearPulse();
-        }
-      });
-
-      scrollBtn.addEventListener('click', scrollToBottom);
-
-      // new content arrived — force scroll unless user scrolled up
-      function onNewContent() {
-        setTimeout(function() {
-          if (userHasScrolledUp) {
-            setPulse();
-          } else {
-            scrollToBottom();
-          }
-        }, 50);
-      }
-
-      // MutationObserver: scroll to bottom on new content
-      var observer = new MutationObserver(function(mutations) {
-        onNewContent();
-      });
-      if (chat) {
-        observer.observe(chat, {childList: true});
-      }
-
-      var timerText = document.getElementById('timer-text');
-      var timerRemaining = 0;
-      var timerInterval = null;
-      var timerPaused = false;
-
-      function startTimer(secs) {
-        timerPaused = false;
-        timerRemaining = secs;
-        updateTimerDisplay();
-        if (timerInterval) clearInterval(timerInterval);
-        timerInterval = setInterval(function() {
-          timerRemaining--;
-          if (timerRemaining <= 0) {
-            clearInterval(timerInterval);
-            timerInterval = null;
-            timerText.textContent = '';
-            fetch('/timer_expired', {method: 'POST'});
-            return;
-          }
-          updateTimerDisplay();
-        }, 1000);
-      }
-
-      function stopTimer() {
-        timerPaused = false;
-        if (timerInterval) clearInterval(timerInterval);
-        timerInterval = null;
-        timerText.textContent = '';
-      }
-
-      function pauseTimer(remaining) {
-        timerPaused = true;
-        if (remaining !== undefined) timerRemaining = remaining;
-        if (timerInterval) clearInterval(timerInterval);
-        timerInterval = null;
-        updateTimerDisplay();
-      }
-
-      function updateTimerDisplay() {
-        if (timerPaused) {
-          timerText.innerHTML = `⏸ На паузе <button onclick="fetch('/resume_timer',{method:'POST'});startTimer(${timerRemaining})" class="ml-2 px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-sm">▶ запустить</button>`;
-        } else {
-          timerText.innerHTML = `⏳ Мастер внимательно слушает и ждет действий группы: осталось <span class="text-amber-200 font-bold">${timerRemaining}</span> сек. <button onclick="fetch('/pause_timer',{method:'POST'});pauseTimer(${timerRemaining})" class="ml-2 px-3 py-1 bg-gray-700 hover:bg-gray-600 rounded text-sm">⏸ Пауза</button>`;
-        }
-      }
-
-      function setInputLock(locked) {
-        var inp = document.getElementById('message-input');
-        if (!inp) return;
-        inp.disabled = locked;
-        inp.classList.toggle('opacity-50', locked);
-      }
-
-      document.body.addEventListener('htmx:oobBeforeSwap', function(evt) {
-        if (evt.detail.shouldSwap && evt.detail.elt.id === '__lock-input') {
-          setInputLock(true);
-          timerText.textContent = '';
-          evt.preventDefault();
-        }
-        if (evt.detail.shouldSwap && evt.detail.elt.id === '__unlock-input') {
-          setInputLock(false);
-          evt.preventDefault();
-        }
-        if (evt.detail.shouldSwap && evt.detail.elt.id === '__timer-reset') {
-          var remaining = parseInt(evt.detail.elt.getAttribute('data-remaining')) || 15;
-          startTimer(remaining);
-          evt.preventDefault();
-        }
-        if (evt.detail.shouldSwap && evt.detail.elt.id === '__timer-stop') {
-          stopTimer();
-          evt.preventDefault();
-        }
-        if (evt.detail.shouldSwap && evt.detail.elt.id === '__timer-pause') {
-          var rem = parseInt(evt.detail.elt.getAttribute('data-remaining')) || 0;
-          pauseTimer(rem);
-          evt.preventDefault();
-        }
-      });
-      document.body.addEventListener('htmx:afterRequest', function(evt) {
-        var path = evt.detail.pathInfo.requestPath;
-        if (path === '/send_message' || path === '/declare_action') {
-          startTimer(15);
-          var inp = document.getElementById('message-input');
-          if (inp) inp.value = '';
-          var ch = document.getElementById('chat-messages');
-          if (ch) { ch.scrollTop = ch.scrollHeight; }
-          var btn = document.getElementById('scroll-bottom-btn');
-          if (btn) {
-            btn.classList.remove('bg-red-500', 'animate-pulse', 'flex');
-            btn.classList.add('bg-emerald-600', 'hidden');
-          }
-        }
-      });
-      window.startTimer = startTimer;
-      window.pauseTimer = pauseTimer;
-      window.stopTimer = stopTimer;
-    })();
-    document.body.addEventListener('htmx:wsAfterMessage', function(evt) {
-      if (evt.detail.message.indexOf('__ws-marker-game-reset') !== -1) {
-        window.location.href = '/';
-      }
-    });
-  </script>
-
-  <div id="player-modal" onclick="if(event.target===this)this.classList.add('hidden')"
-       class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-    <div id="player-modal-content"
-         class="relative bg-gray-800 rounded-xl border border-gray-700 max-w-lg w-full mx-4 max-h-[80vh] overflow-y-auto p-6 shadow-2xl">
-    </div>
-  </div>
-
-  <div id="lore-modal" onclick="if(event.target===this)this.classList.add('hidden')"
-       class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-    <div id="lore-modal-content"
-         class="relative bg-gray-800 rounded-xl border border-gray-700 max-w-lg w-full mx-4 max-h-[80vh] overflow-y-auto p-6 shadow-2xl">
-    </div>
-  </div>
-</body>
-</html>"""
-
-
 def _render_message(sender: str, text: str, is_action: bool = False, oob_target: str = "", sender_id: str = "") -> str:
     is_gm = sender == "GM"
     bg = "bg-amber-700/40 border-amber-600/30" if is_action else ("bg-emerald-700/30 border-emerald-600/20" if is_gm else "bg-gray-700/50 border-gray-600/30")
@@ -504,7 +263,7 @@ def _render_player_detail_modal(row) -> str:
     effects_html = ", ".join(html.escape(e) for e in effects) if effects else '<span class="text-gray-500 italic">нет</span>'
     name = html.escape(row["name"])
     cls = html.escape(row["class_archetype"]) if row["class_archetype"] else "—"
-    has_cls_desc = "class_description" in row.keys() and row["class_description"]
+    has_cls_desc = "class_description" in row and row["class_description"]
     cls_desc = html.escape(row["class_description"]) if has_cls_desc else ""
 
     cls_desc_block = f'<p class="text-xs text-gray-500 italic mb-3">{cls_desc}</p>' if cls_desc else '<div class="mb-3"></div>'
@@ -633,7 +392,13 @@ async def index(request: Request):
                 return RedirectResponse(url="/backstories")
             panel_html = await _render_players_panel_str()
             lore_card_html = _render_lore_card()
-            return _INDEX_HTML.replace("{PLAYER_NAME}", current_player["name"]).replace("{CURRENT_PLAYER_ID}", str(current_player["id"])).replace("{INPUT_AREA}", _build_input_area_html(locked=False)).replace("{PLAYERS_PANEL}", panel_html).replace("{LORE_CARD}", lore_card_html)
+            return templates.TemplateResponse(request, "index.html", {
+                "player_name": current_player["name"],
+                "current_player_id": str(current_player["id"]),
+                "input_area": _build_input_area_html(locked=False),
+                "players_panel": panel_html,
+                "lore_card": lore_card_html,
+            })
         local_ip_info = _render_local_ip_info()
         return templates.TemplateResponse(request, "lobby.html", {
             "players": players, "current_player_id": None,
@@ -1037,7 +802,7 @@ async def backstory_status(request: Request):
         return '<p class="text-gray-400 text-sm text-center mt-4">У вас нет персонажа. Генерация мира недоступна.</p>'
 
     for p in players:
-        val = p["backstory"] if "backstory" in p.keys() else "N/A"
+        val = p["backstory"] if "backstory" in p else "N/A"
         print(f"[/backstory_status]  player id={p['id']} name={p['name']}  backstory='{val}' (длина={len(val)})")
 
     all_filled = all(p["backstory"] for p in players) if players else False
@@ -1260,7 +1025,7 @@ async def timer_expired():
     if remaining.total_seconds() > 1:
         return ""
     reset_timer()
-    asyncio.ensure_future(_auto_respond())
+    asyncio.create_task(_auto_respond())
     return ""
 
 
@@ -1396,7 +1161,7 @@ async def admin(request: Request):
         for r in players
     )
 
-    logout_link = f'<span class="text-gray-600">|</span><form hx-post="/admin/logout" hx-target="body" hx-swap="outerHTML"><button type="submit" class="text-sm text-red-400 hover:text-red-300 underline">Выйти</button></form>' if _ADMIN_PASSWORD else ""
+    logout_link = '<span class="text-gray-600">|</span><form hx-post="/admin/logout" hx-target="body" hx-swap="outerHTML"><button type="submit" class="text-sm text-red-400 hover:text-red-300 underline">Выйти</button></form>' if _ADMIN_PASSWORD else ""
     return f"""<!DOCTYPE html>
 <html lang="ru">
 <head>

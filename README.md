@@ -6,11 +6,10 @@
 ## Установка
 
 1. Установите [Poetry](https://python-poetry.org/docs/#installation).
-2. Скопируйте проект и установите зависимости:
+2. Скопируйте проект и установите зависимости (из корня репозитория):
 
 ```bash
-cd AITTF
-poetry install
+python -m poetry install
 ```
 
 3. Создайте `AITTF/.env` (скопируйте из `.env.example`):
@@ -24,16 +23,14 @@ MODEL=deepseek-v4-flash-free
 Для смены провайдера укажите `BASE_URL` другого OpenAI-совместимого API:
 | Провайдер | BASE_URL | MODEL |
 |-----------|----------|-------|
-| opencode.ai | `https://opencode.ai/zen/v1` | `deepseek-v4-flash-free` |
 | OpenAI | `https://api.openai.com/v1` | `gpt-4o-mini` |
-| OpenRouter | `https://openrouter.ai/api/v1` | `cognitivecomputations/dolphin3.0-r1-mistral-24b:free` |
 | LM Studio (локально) | `http://localhost:1234/v1` | `*` |
+| Любой совместимый | `<url>` | `<model>` |
 
 ## Запуск
 
 ```bash
-cd AITTF
-poetry run uvicorn web.main:app --host 0.0.0.0 --port 8000
+python -m poetry run uvicorn web.main:app --host 0.0.0.0 --port 8000
 ```
 
 Для доступа с других устройств в локальной сети узнайте IP сервера (`ipconfig` / `ip a`) и откройте `http://<IP>:8000`. Фаерволл должен разрешать порт 8000.
@@ -91,42 +88,7 @@ LLM анализирует концепты и предыстории всех �
 - **Автоскролл чата** — при отправке принудительный скролл вниз; при получении — только если вы не листали вверх.
 - **Кнопка** `↓` — показывается, если вы отмотали вверх; становится красной с пульсацией, если пришли новые сообщения.
 
-## Структура проекта
-
-```
-AITTF/
-├── __init__.py
-├── .env.example          # Шаблон переменных окружения
-├── .gitignore
-├── init_game.py          # Консольная инициализация (резервная)
-├── test_llm.py           # Тест вызова LLM
-├── pyproject.toml        # Зависимости (FastAPI, uvicorn, httpx, jinja2, ...)
-├── db/
-│   ├── __init__.py
-│   └── database.py       # SQLite — инициализация, CRUD, таймеры
-├── models/
-│   ├── __init__.py
-│   └── models.py         # Pydantic-схемы
-├── llm/
-│   ├── __init__.py
-│   ├── ai_generator.py   # HTTP-вызов LLM (httpx)
-│   ├── context_builder.py# Сборка системного промпта
-│   └── turn_processor.py # Парсинг ответа AI, TurnResponse
-├── core/
-│   ├── __init__.py
-│   ├── game_engine.py    # Броски кубиков, инициатива, бой
-│   └── initialization.py # Создание игровой сессии
-└── web/
-    ├── __init__.py
-    ├── main.py           # FastAPI-сервер, WebSocket, HTMX-эндпоинты
-    └── templates/
-        ├── lobby.html               # Лобби (вход, старт игры)
-        ├── slots.html               # Сетка слотов игроков
-        ├── backstories.html         # Страница предысторий
-        └── backstories_players.html # Карточки предысторий игроков
-```
-
-### Технологии
+## Технологии
 
 | Компонент | Что используется |
 |-----------|-----------------|

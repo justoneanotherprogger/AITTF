@@ -1,4 +1,6 @@
 import asyncio
+import contextlib
+
 from core.initialization import init_game_session
 
 
@@ -8,10 +10,8 @@ async def main() -> None:
 
     player_count = 0
     while player_count < 1 or player_count > 5:
-        try:
+        with contextlib.suppress(ValueError):
             player_count = int(input("Сколько будет игроков? (1–5): "))
-        except ValueError:
-            pass
 
     print()
     player_inputs: list[dict] = []
