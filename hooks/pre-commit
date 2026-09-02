@@ -1,4 +1,6 @@
 #!/bin/sh
 # Source file size ratchet — see scripts/check_file_size.py.
+# Ruff linter — see pyproject.toml [tool.ruff].
 # Enable repo-local hooks once per clone: git config core.hooksPath hooks
 python scripts/check_file_size.py || exit 1
+python -m ruff check . || exit 1
