@@ -6,10 +6,9 @@
 ## Установка
 
 1. Установите [Poetry](https://python-poetry.org/docs/#installation).
-2. Скопируйте проект и установите зависимости:
+2. Скопируйте проект и установите зависимости (из корня репозитория):
 
 ```bash
-cd AITTF
 poetry install
 ```
 
@@ -32,7 +31,6 @@ MODEL=deepseek-v4-flash-free
 ## Запуск
 
 ```bash
-cd AITTF
 poetry run uvicorn web.main:app --host 0.0.0.0 --port 8000
 ```
 
@@ -120,6 +118,7 @@ AITTF/
     ├── __init__.py
     ├── main.py           # FastAPI-сервер, WebSocket, HTMX-эндпоинты
     └── templates/
+        ├── index.html               # Игровой интерфейс (чат, панель, лор)
         ├── lobby.html               # Лобби (вход, старт игры)
         ├── slots.html               # Сетка слотов игроков
         ├── backstories.html         # Страница предысторий
